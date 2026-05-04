@@ -806,12 +806,29 @@ function itemLooksFamilyOrAnimation(item) {
   );
 }
 
+function itemYear(item) {
+  const film = item?.film || item?.raw || item || {};
+  return normalizeYear(film.year) || normalizeYear(film.release_date) || 0;
+}
+
+function itemIsRecent(item, minRecentYear = 2020) {
+  const year = itemYear(item);
+  return year >= minRecentYear;
+}
+
 function selectDiverse(scoredItems, max, options = {}) {
   const selected = [];
   const genreCounts = new Map();
   const familyAnimationCap = Number.isFinite(options.familyAnimationCap)
     ? options.familyAnimationCap
     : Infinity;
+  const minRecentItems = Math.min(
+    max,
+    Number.isFinite(options.minRecentItems) ? options.minRecentItems : 0
+  );
+  const minRecentYear = Number.isFinite(options.minRecentYear)
+    ? options.minRecentYear
+    : 2020;
   let familyAnimationCount = 0;
 
   function alreadySelected(item) {
@@ -829,8 +846,27 @@ function selectDiverse(scoredItems, max, options = {}) {
     if (itemLooksFamilyOrAnimation(item)) familyAnimationCount += 1;
   }
 
+  function tryTake(item) {
+    if (alreadySelected(item)) return false;
+    if (!canTakeFamilyAnimation(item, true)) return false;
+    take(item);
+    return true;
+  }
+
+  if (minRecentItems > 0) {
+    for (const item of scoredItems) {
+      if (selected.length >= max) break;
+      if (selected.filter((candidate) => itemIsRecent(candidate, minRecentYear)).length >= minRecentItems) {
+        break;
+      }
+      if (!itemIsRecent(item, minRecentYear)) continue;
+      tryTake(item);
+    }
+  }
+
   for (const item of scoredItems) {
     if (selected.length >= max) break;
+    if (alreadySelected(item)) continue;
     if (!canTakeFamilyAnimation(item, true)) continue;
     const genre = item.primaryGenre || "autre";
     const count = genreCounts.get(genre) || 0;
@@ -842,9 +878,7 @@ function selectDiverse(scoredItems, max, options = {}) {
   if (selected.length < max) {
     for (const item of scoredItems) {
       if (selected.length >= max) break;
-      if (alreadySelected(item)) continue;
-      if (!canTakeFamilyAnimation(item, true)) continue;
-      take(item);
+      tryTake(item);
     }
   }
 
@@ -999,7 +1033,11 @@ export function buildRecommendations({
   const filteredRanked = ranked.filter((item) => item.score >= minScore);
   const baseRanked = filteredRanked.length >= max ? filteredRanked : ranked;
   const ordered = randomize ? buildRandomizedOrder(baseRanked) : buildVariedOrder(baseRanked);
-  const diverse = selectDiverse(ordered, max, { familyAnimationCap });
+  const diverse = selectDiverse(ordered, max, {
+    familyAnimationCap,
+    minRecentItems: 2,
+    minRecentYear: 2020,
+  });
 
   if (diverse.length >= max) {
     return diverse.slice(0, max).map(enrichItem);
