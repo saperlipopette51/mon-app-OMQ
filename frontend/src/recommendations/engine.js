@@ -355,8 +355,45 @@ function looksFamilyOrAnimation(film) {
   );
 }
 
+function looksAnimated(film) {
+  const genreIds = Array.isArray(film?.genre_ids) ? film.genre_ids.map(Number) : [];
+  const genreText = normalizeText(
+    `${film?.genre || ""} ${Array.isArray(film?.genres) ? film.genres.join(" ") : ""}`
+  );
+  return (
+    genreIds.includes(16) ||
+    genreText.includes("animation") ||
+    genreText.includes("dessin") ||
+    genreText.includes("anime") ||
+    genreText.includes("manga")
+  );
+}
+
 function wantsFamilyOrAnimation(genreTargets = []) {
   return genreTargets.some((genre) => genre === "animation" || genre === "family");
+}
+
+function wantsAnimation(genreTargets = []) {
+  return genreTargets.some((genre) => genre === "animation");
+}
+
+function disneyIsRequested(globalAnswers = {}) {
+  const platforms = Array.isArray(globalAnswers.platforms)
+    ? globalAnswers.platforms
+    : [globalAnswers.platform];
+  return platforms.map((platform) => normalizeText(platform)).some((platform) => {
+    const aliases = PLATFORM_ALIASES[platform] || [platform];
+    return platform === "disney-plus" || aliases.some((alias) => normalizeText(alias).includes("disney"));
+  });
+}
+
+function shouldBlockAnimation({ globalAnswers, genreTargets, film }) {
+  return (
+    isToutPublicRequest(globalAnswers?.ageRestriction) &&
+    !wantsAnimation(genreTargets) &&
+    !disneyIsRequested(globalAnswers) &&
+    looksAnimated(film)
+  );
 }
 
 function familyAnimationOverloadPenalty({ selectedAge, film, filmGenres, genreTargets }) {
@@ -534,9 +571,13 @@ function buildUserList(quizPayload, answers) {
 
 function buildGlobalAnswers(quizPayload, answers) {
   const fromGlobal = quizPayload?.globalAnswers || {};
+  const platforms = Array.isArray(fromGlobal.platforms)
+    ? fromGlobal.platforms
+    : [fromGlobal.platform || answers?.platform || ""].filter(Boolean);
   return {
     ageRestriction: normalizeText(fromGlobal.ageRestriction || answers?.ageRestriction || ""),
     platform: normalizeText(fromGlobal.platform || answers?.platform || ""),
+    platforms,
   };
 }
 
@@ -806,6 +847,19 @@ function itemLooksFamilyOrAnimation(item) {
   );
 }
 
+function itemLooksAnimated(item) {
+  const film = item?.film || item?.raw || item || {};
+  const genres = extractGenres(film);
+  return item?.primaryGenre === "animation" || genres.includes("animation") || looksAnimated(film);
+}
+
+function itemMatchesGenreTargets(item, genreTargets = []) {
+  if (!Array.isArray(genreTargets) || genreTargets.length === 0) return true;
+  const film = item?.film || item?.raw || item || {};
+  const genres = extractGenres(film);
+  return genreTargets.some((genre) => genres.includes(genre));
+}
+
 function itemYear(item) {
   const film = item?.film || item?.raw || item || {};
   return normalizeYear(film.year) || normalizeYear(film.release_date) || 0;
@@ -838,13 +892,13 @@ function selectDiverse(scoredItems, max, options = {}) {
 
   function canTakeFamilyAnimation(item, enforceCap) {
     if (!enforceCap) return true;
-    if (!itemLooksFamilyOrAnimation(item)) return true;
+    if (!itemLooksAnimated(item)) return true;
     return familyAnimationCount < familyAnimationCap;
   }
 
   function take(item) {
     selected.push(item);
-    if (itemLooksFamilyOrAnimation(item)) familyAnimationCount += 1;
+    if (itemLooksAnimated(item)) familyAnimationCount += 1;
   }
 
   function tryTake(item) {
@@ -893,7 +947,7 @@ function selectDiverse(scoredItems, max, options = {}) {
   // Once 5 coherent choices exist, keep the family/animation cap instead of padding with cartoons.
   if (selected.length < max) {
     takeFrom(
-      scoredItems.filter((item) => !itemLooksFamilyOrAnimation(item)),
+      scoredItems.filter((item) => !itemLooksAnimated(item)),
       { enforceFamilyCap: false }
     );
   }
@@ -963,8 +1017,9 @@ export function buildRecommendations({
   ]);
   const familyAnimationCap =
     isToutPublicRequest(globalAnswers.ageRestriction) &&
-    !wantsFamilyOrAnimation(requestedGenreTargets)
-      ? Math.max(1, Math.min(2, Math.floor(max / 3)))
+    !wantsAnimation(requestedGenreTargets) &&
+    !disneyIsRequested(globalAnswers)
+      ? 0
       : Infinity;
   const excluded = new Set(excludedKeys.map((key) => String(key)));
   const avoided = new Set(avoidTitles.map((title) => normalizeText(title)));
@@ -973,7 +1028,16 @@ export function buildRecommendations({
 
   const scored = candidateFilms
     .map((film) => scoreFilm(film, { users, globalAnswers, strictTargets }))
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((item) =>
+      shouldBlockAnimation({
+        globalAnswers,
+        genreTargets: requestedGenreTargets,
+        film: item?.film,
+      })
+        ? false
+        : true
+    );
 
   let unique = dedupeByTitle(scored).filter((item) => {
     if (excluded.has(item.key)) return false;
@@ -1017,6 +1081,12 @@ export function buildRecommendations({
         if (titleKey && currentTitles.has(titleKey)) return null;
         if (excluded.has(key)) return null;
         if (titleKey && avoided.has(titleKey)) return null;
+        if (shouldBlockAnimation({ globalAnswers, genreTargets: requestedGenreTargets, film })) {
+          return null;
+        }
+        if (!itemMatchesGenreTargets(film, requestedGenreTargets)) {
+          return null;
+        }
         return buildFallbackScoredItem({ film, strictTargets, globalAnswers });
       })
       .filter(Boolean);
@@ -1030,6 +1100,11 @@ export function buildRecommendations({
 
   if (!unique.length) {
     const emergency = dedupeFilmPool(Array.isArray(films) ? films : [])
+      .filter(
+        (film) =>
+          !shouldBlockAnimation({ globalAnswers, genreTargets: requestedGenreTargets, film }) &&
+          itemMatchesGenreTargets(film, requestedGenreTargets)
+      )
       .map((film) => buildFallbackScoredItem({ film, strictTargets, globalAnswers }))
       .filter(Boolean);
     unique = dedupeByTitle(emergency);
@@ -1051,19 +1126,25 @@ export function buildRecommendations({
   });
 
   if (diverse.length >= max) {
-    return diverse.slice(0, max).map(enrichItem);
+    return diverse
+      .filter((item) => itemMatchesGenreTargets(item, requestedGenreTargets))
+      .slice(0, max)
+      .map(enrichItem);
   }
 
   const firstFallbackSource = (randomize ? shuffle(baseRanked) : baseRanked).filter((item) => {
     if (diverse.some((candidate) => candidate.key === item.key)) return false;
-    if (!Number.isFinite(familyAnimationCap) || !itemLooksFamilyOrAnimation(item)) return true;
+    if (!itemMatchesGenreTargets(item, requestedGenreTargets)) return false;
+    if (!Number.isFinite(familyAnimationCap) || !itemLooksAnimated(item)) return true;
     return false;
   });
   let finalItems = [...diverse, ...firstFallbackSource].slice(0, max);
 
   if (finalItems.length < Math.min(max, 4)) {
     const relaxedFallback = (randomize ? shuffle(baseRanked) : baseRanked).filter(
-      (item) => !finalItems.some((candidate) => candidate.key === item.key)
+      (item) =>
+        !finalItems.some((candidate) => candidate.key === item.key) &&
+        itemMatchesGenreTargets(item, requestedGenreTargets)
     );
     finalItems = [...finalItems, ...relaxedFallback].slice(0, max);
   }
@@ -1080,6 +1161,12 @@ export function buildRecommendations({
         const titleKey = normalizeText(film?.title);
         if (selectedKeys.has(key)) return null;
         if (titleKey && selectedTitles.has(titleKey)) return null;
+        if (shouldBlockAnimation({ globalAnswers, genreTargets: requestedGenreTargets, film })) {
+          return null;
+        }
+        if (!itemMatchesGenreTargets(film, requestedGenreTargets)) {
+          return null;
+        }
         return buildFallbackScoredItem({ film, strictTargets, globalAnswers });
       })
       .filter(Boolean);
@@ -1091,7 +1178,9 @@ export function buildRecommendations({
     });
   }
 
-  return finalItems.map(enrichItem);
+  return finalItems
+    .filter((item) => itemMatchesGenreTargets(item, requestedGenreTargets))
+    .map(enrichItem);
 }
 
 export function filmKey(item) {

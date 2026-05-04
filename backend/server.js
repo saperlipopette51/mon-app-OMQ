@@ -786,6 +786,14 @@ function scoreFilmForBackend(film, { genre, genres, contentType, ageRestriction,
   if (!filmMatchesType(film, contentType)) return null;
   const normalizedOrigin = normalizeOrigin(origin);
   if (normalizedOrigin && !filmMatchesOrigin(film, normalizedOrigin)) return null;
+  const normalizedAgeRestriction = normalizeAgeRestriction(ageRestriction);
+  const normalizedPlatform = normalizePlatform(platform);
+  const animationBlocked =
+    normalizedAgeRestriction === "all" &&
+    !requestedFamilyOrAnimation(activeGenres) &&
+    normalizedPlatform !== "disney-plus" &&
+    isFamilyOrAnimationFilm(film);
+  if (animationBlocked) return null;
 
   const genreScore = activeGenres.length ? 40 : 40;
   const typeScore =
@@ -793,9 +801,9 @@ function scoreFilmForBackend(film, { genre, genres, contentType, ageRestriction,
       ? 20
       : 20;
   const ageScore = filmAgeScore(ageRestriction, film);
-  if (normalizeAgeRestriction(ageRestriction) && ageScore <= 0) return null;
+  if (normalizedAgeRestriction && ageScore <= 0) return null;
   const originScore = normalizedOrigin ? 10 : 10;
-  const platformScore = normalizePlatform(platform)
+  const platformScore = normalizedPlatform
     ? filmMatchesPlatform(film, platform)
       ? 5
       : 0
@@ -811,11 +819,20 @@ function scoreFilmForBackend(film, { genre, genres, contentType, ageRestriction,
 
 function isFamilyOrAnimationFilm(film) {
   const genreIds = Array.isArray(film?.genre_ids) ? film.genre_ids.map(Number) : [];
-  return genreIds.includes(16) || genreIds.includes(10751);
+  const genreText = normalizeTitleKey(
+    `${film?.genre || ""} ${Array.isArray(film?.genres) ? film.genres.join(" ") : ""}`
+  );
+  return (
+    genreIds.includes(16) ||
+    genreText.includes("animation") ||
+    genreText.includes("dessin") ||
+    genreText.includes("anime") ||
+    genreText.includes("manga")
+  );
 }
 
 function requestedFamilyOrAnimation(genres = []) {
-  return normalizeGenreIds(genres).some((genreId) => genreId === "16" || genreId === "10751");
+  return normalizeGenreIds(genres).some((genreId) => genreId === "16");
 }
 
 function diversifyRankedFilms(rankedFilms, limit = 90, options = {}) {
@@ -845,7 +862,10 @@ function diversifyRankedFilms(rankedFilms, limit = 90, options = {}) {
       if (selected.length >= limit) break;
       const key = `${film?.type || "film"}:${film?.id}`;
       if (selectedKeys.has(key)) continue;
+      const familyAnimation = isFamilyOrAnimationFilm(film);
+      if (familyAnimation && familyAnimationCount >= familyAnimationCap) continue;
       selected.push(film);
+      if (familyAnimation) familyAnimationCount += 1;
       selectedKeys.add(key);
     }
   }
@@ -1226,8 +1246,10 @@ async function fetchTmdbFilmsWide({
     .sort((a, b) => Number(b.backend_rank_score || 0) - Number(a.backend_rank_score || 0));
 
   const familyAnimationCap =
-    normalizedAgeRestriction === "all" && !requestedFamilyOrAnimation(normalizedGenreIds)
-      ? 12
+    normalizedAgeRestriction === "all" &&
+    !requestedFamilyOrAnimation(normalizedGenreIds) &&
+    normalizedPlatform !== "disney-plus"
+      ? 0
       : Infinity;
   const diversified = diversifyRankedFilms(scored, 120, { familyAnimationCap });
   const notice =

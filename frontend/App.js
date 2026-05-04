@@ -547,6 +547,44 @@ function filmMatchesAnyRequiredGenre(film, requiredGenres = []) {
   return targets.some((genre) => ids.includes(genre));
 }
 
+function filmLooksAnimated(film) {
+  const ids = Array.isArray(film?.genre_ids) ? film.genre_ids.map(String) : [];
+  const text = String(
+    `${film?.genre || ""} ${Array.isArray(film?.genres) ? film.genres.join(" ") : ""}`
+  )
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  return (
+    ids.includes("16") ||
+    text.includes("animation") ||
+    text.includes("dessin") ||
+    text.includes("anime") ||
+    text.includes("manga")
+  );
+}
+
+function quizAllowsAnimation(quizPayload = {}) {
+  const requestedGenres = getRequestedGenres(quizPayload);
+  const selectedPlatforms = getSelectedPlatforms(quizPayload?.globalAnswers || {});
+  return (
+    requestedGenres.includes("16") ||
+    selectedPlatforms.some((platform) => canonicalizePlatform(platform) === "disney-plus")
+  );
+}
+
+function quizBlocksAnimation(quizPayload = {}) {
+  const ageRestriction = String(quizPayload?.globalAnswers?.ageRestriction || "")
+    .trim()
+    .toLowerCase();
+  return (ageRestriction === "all" || ageRestriction.includes("tout public")) && !quizAllowsAnimation(quizPayload);
+}
+
+function filmAllowedByAnimationRule(film, quizPayload = {}) {
+  return !(quizBlocksAnimation(quizPayload) && filmLooksAnimated(film));
+}
+
 function recommendationMatchesAnyRequiredGenre(item, requiredGenres = []) {
   return filmMatchesAnyRequiredGenre(item?.raw || item, requiredGenres);
 }
@@ -651,6 +689,7 @@ function pickFirstDifferentFilm({
   requiredGenres = [],
   requiredContentType = "",
   requiredOrigin = "",
+  quizPayload = null,
 }) {
   const keySet = new Set((excludedKeys || []).map((key) => String(key)));
   const titleSet = new Set((excludedTitles || []).map((title) => normalizeTitle(title)));
@@ -666,6 +705,7 @@ function pickFirstDifferentFilm({
       continue;
     }
     if (!filmMatchesRequiredOrigin(film, requiredOrigin)) continue;
+    if (quizPayload && !filmAllowedByAnimationRule(film, quizPayload)) continue;
     candidates.push(film);
   }
 
@@ -1513,6 +1553,9 @@ export default function App() {
             if (!filmMatchesRequiredOrigin(film, targetOrigin)) {
               return false;
             }
+            if (!filmAllowedByAnimationRule(film, quizPayload)) {
+              return false;
+            }
             return filmMatchesAnyRequiredGenre(film, targetGenres);
           });
 
@@ -1538,6 +1581,9 @@ export default function App() {
                 return false;
               }
               if (!filmMatchesRequiredOrigin(film, targetOrigin)) {
+                return false;
+              }
+              if (!filmAllowedByAnimationRule(film, quizPayload)) {
                 return false;
               }
               return true;
@@ -1589,6 +1635,17 @@ export default function App() {
               after: uniqueItems.length,
             });
           }
+        }
+
+        const beforeAnimationGuard = uniqueItems.length;
+        uniqueItems = uniqueItems.filter((item) =>
+          filmAllowedByAnimationRule(item?.raw || item, quizPayload)
+        );
+        if (beforeAnimationGuard !== uniqueItems.length) {
+          console.log("[RECO] garde finale animation: dessins animes retires", {
+            before: beforeAnimationGuard,
+            after: uniqueItems.length,
+          });
         }
 
         registerUsedTitles(uniqueItems);
@@ -1957,7 +2014,8 @@ export default function App() {
         (film) =>
           filmMatchesAnyRequiredGenre(film, requiredGenres) &&
           filmMatchesRequiredType(film, requiredContentType) &&
-          filmMatchesRequiredOrigin(film, requiredOrigin)
+          filmMatchesRequiredOrigin(film, requiredOrigin) &&
+          filmAllowedByAnimationRule(film, recommendationState.quizPayload)
       );
 
       if (!scopedCandidatePool.length) {
@@ -1973,6 +2031,7 @@ export default function App() {
           requiredGenres,
           requiredContentType,
           requiredOrigin,
+          quizPayload: recommendationState.quizPayload,
         });
         return;
       }
@@ -2022,6 +2081,7 @@ export default function App() {
           requiredGenres,
           requiredContentType,
           requiredOrigin,
+          quizPayload: recommendationState.quizPayload,
         });
 
         if (!emergencyFilm) {
@@ -2037,6 +2097,7 @@ export default function App() {
             requiredGenres,
             requiredContentType,
             requiredOrigin,
+            quizPayload: recommendationState.quizPayload,
           });
           return;
         }
@@ -2180,7 +2241,8 @@ export default function App() {
           (film) =>
             filmMatchesAnyRequiredGenre(film, requiredGenres) &&
             filmMatchesRequiredType(film, requiredContentType) &&
-            filmMatchesRequiredOrigin(film, requiredOrigin)
+            filmMatchesRequiredOrigin(film, requiredOrigin) &&
+            filmAllowedByAnimationRule(film, recommendationState.quizPayload)
         );
 
         if (!scopedCandidatePool.length) {
@@ -2196,6 +2258,7 @@ export default function App() {
             requiredGenres,
             requiredContentType,
             requiredOrigin,
+            quizPayload: recommendationState.quizPayload,
           });
           return;
         }
