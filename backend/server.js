@@ -1132,7 +1132,7 @@ async function fetchTmdbFilmsWide({
       : normalizedContentType === "peu-importe" || !normalizedContentType
       ? ["movie", "tv"]
       : ["movie"];
-  const pages = Array.from({ length: 5 }, (_, index) => Math.max(1, page + index));
+  const pages = Array.from({ length: 6 }, (_, index) => Math.max(1, page + index));
   const originCountry = resolveOriginCountry(normalizedOrigin, page);
   const excluded = new Set(
     (Array.isArray(excludeIds) ? excludeIds : []).map((entry) => String(entry))
@@ -1227,9 +1227,9 @@ async function fetchTmdbFilmsWide({
 
   const familyAnimationCap =
     normalizedAgeRestriction === "all" && !requestedFamilyOrAnimation(normalizedGenreIds)
-      ? 18
+      ? 12
       : Infinity;
-  const diversified = diversifyRankedFilms(scored, 90, { familyAnimationCap });
+  const diversified = diversifyRankedFilms(scored, 120, { familyAnimationCap });
   const notice =
     scored.length < 5
       ? "Peu de resultats exacts: OMQ a elargi intelligemment le pool TMDB."
@@ -1345,7 +1345,7 @@ app.get("/films", async (req, res) => {
       setCachedFilms(cacheKey, emptyPayload);
       return res.status(200).json(emptyPayload);
     }
-    const payload = films.slice(0, 90);
+    const payload = films.slice(0, 120);
     setCachedFilms(cacheKey, payload);
     if (notice) {
       return res.status(200).json({

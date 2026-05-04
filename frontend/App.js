@@ -113,6 +113,7 @@ const API_UNAVAILABLE_MESSAGE =
 
 const PREFERENCE_STORAGE_KEY = "@omq/preference-memory/v1";
 const FAVORITES_STORAGE_KEY = "@omq/favorites/v1";
+const RECOMMENDATION_LIMIT = 5;
 const NO_MATCH_MESSAGE =
   "OMQ a fouille sous tous les coussins du canape, mais rien ne matche vraiment. On refait le quiz avec des criteres un peu moins corses ?";
 const PLATFORM_CANONICAL_MAP = {
@@ -900,13 +901,13 @@ function uniqueFilms(items) {
 }
 
 function pickCandidatePages() {
-  const base = 1 + Math.floor(Math.random() * 4);
-  const pages = [base, base + 1].map((page) => ((page - 1) % 8) + 1);
+  const base = 1 + Math.floor(Math.random() * 6);
+  const pages = [base, base + 1, base + 2].map((page) => ((page - 1) % 12) + 1);
   return [...new Set(pages)];
 }
 
 function pickWidePages() {
-  return [1, 2, 3, 4];
+  return [1, 2, 3, 4, 5, 6];
 }
 
 function buildFilmsUrl(baseUrl, query = {}) {
@@ -1413,7 +1414,7 @@ export default function App() {
           films,
           quizPayload,
           answers: quizPayload?.aggregatedAnswers || {},
-          max: 5,
+          max: RECOMMENDATION_LIMIT,
           randomize,
           excludedKeys: [...seenKeys, ...dislikedKeys],
           avoidTitles: [
@@ -1423,14 +1424,14 @@ export default function App() {
           ],
         });
 
-        let uniqueItems = uniqueRecommendations(recommendations).slice(0, 5);
+        let uniqueItems = uniqueRecommendations(recommendations).slice(0, RECOMMENDATION_LIMIT);
 
-        if (uniqueItems.length < 5) {
+        if (uniqueItems.length < RECOMMENDATION_LIMIT) {
           const fallback = buildRecommendationsForPlatforms({
             films: safeFilms,
             quizPayload,
             answers: quizPayload?.aggregatedAnswers || {},
-            max: 5,
+            max: RECOMMENDATION_LIMIT,
             randomize: true,
             excludedKeys: [...seenKeys, ...dislikedKeys],
             avoidTitles: [
@@ -1438,20 +1439,26 @@ export default function App() {
               ...(randomize ? currentTitles : []),
             ],
           });
-          uniqueItems = uniqueRecommendations([...uniqueItems, ...fallback]).slice(0, 5);
+          uniqueItems = uniqueRecommendations([...uniqueItems, ...fallback]).slice(
+            0,
+            RECOMMENDATION_LIMIT
+          );
         }
 
-        if (uniqueItems.length < 5) {
+        if (uniqueItems.length < RECOMMENDATION_LIMIT) {
           const relaxed = buildRecommendationsForPlatforms({
             films: safeFilms,
             quizPayload,
             answers: quizPayload?.aggregatedAnswers || {},
-            max: 5,
+            max: RECOMMENDATION_LIMIT,
             randomize: true,
             excludedKeys: [...seenKeys, ...dislikedKeys],
             avoidTitles: [],
           });
-          uniqueItems = uniqueRecommendations([...uniqueItems, ...relaxed]).slice(0, 5);
+          uniqueItems = uniqueRecommendations([...uniqueItems, ...relaxed]).slice(
+            0,
+            RECOMMENDATION_LIMIT
+          );
         }
 
         if (randomize && uniqueItems.length > 0 && previousKeys.length > 0) {
@@ -1465,18 +1472,21 @@ export default function App() {
               films: safeFilms,
               quizPayload,
               answers: quizPayload?.aggregatedAnswers || {},
-              max: 5,
+              max: RECOMMENDATION_LIMIT,
               randomize: true,
               excludedKeys: [...seenKeys, ...dislikedKeys, ...nextKeys],
               avoidTitles: [...historicalTitles, ...memoryAvoidTitles],
             });
             if (reroll.length > 0) {
-              uniqueItems = uniqueRecommendations([...reroll, ...uniqueItems]).slice(0, 5);
+              uniqueItems = uniqueRecommendations([...reroll, ...uniqueItems]).slice(
+                0,
+                RECOMMENDATION_LIMIT
+              );
             }
           }
         }
 
-        if (uniqueItems.length < 5) {
+        if (uniqueItems.length < RECOMMENDATION_LIMIT) {
           const targetGenres = getRequestedGenres(quizPayload);
           const targetType = String(quizPayload?.aggregatedAnswers?.contentType || "").trim();
           const targetOrigin = String(quizPayload?.aggregatedAnswers?.origin || "").trim();
@@ -1507,7 +1517,7 @@ export default function App() {
           });
 
           for (const film of genreStrictPool) {
-            if (uniqueItems.length >= 5) break;
+            if (uniqueItems.length >= RECOMMENDATION_LIMIT) break;
             const item = toRecommendationItemFromFilm(film, 62);
             const key = String(filmKey(item));
             const titleKey = normalizeTitle(item?.title);
@@ -1517,7 +1527,7 @@ export default function App() {
             if (titleKey) currentTitles.add(titleKey);
           }
 
-          if (uniqueItems.length < 5 && !targetGenres.length) {
+          if (uniqueItems.length < RECOMMENDATION_LIMIT && !targetGenres.length) {
             const typeOnlyPool = safeFilms.filter((film) => {
               const idKey = String(film?.id ?? "");
               const titleKey = normalizeTitle(film?.title);
@@ -1534,7 +1544,7 @@ export default function App() {
             });
 
             for (const film of typeOnlyPool) {
-              if (uniqueItems.length >= 5) break;
+              if (uniqueItems.length >= RECOMMENDATION_LIMIT) break;
               const item = toRecommendationItemFromFilm(film, 58);
               const key = String(filmKey(item));
               const titleKey = normalizeTitle(item?.title);
@@ -1543,7 +1553,7 @@ export default function App() {
               currentKeys.add(key);
               if (titleKey) currentTitles.add(titleKey);
             }
-          } else if (uniqueItems.length < 5 && targetGenres.length) {
+          } else if (uniqueItems.length < RECOMMENDATION_LIMIT && targetGenres.length) {
             console.log("[RECO] complement arrete: genre obligatoire conserve", {
               targetGenres,
               count: uniqueItems.length,
@@ -2034,7 +2044,7 @@ export default function App() {
         const emergencyReplacement = toRecommendationItemFromFilm(emergencyFilm, 66);
         const nextItems = [...currentItems];
         nextItems[targetIndex] = emergencyReplacement;
-        const finalItems = uniqueRecommendations(nextItems).slice(0, 5);
+        const finalItems = uniqueRecommendations(nextItems).slice(0, RECOMMENDATION_LIMIT);
 
         setRecommendationState((prev) => ({
           ...prev,
@@ -2053,7 +2063,7 @@ export default function App() {
 
       const nextItems = [...currentItems];
       nextItems[targetIndex] = replacement;
-      const finalItems = uniqueRecommendations(nextItems).slice(0, 5);
+      const finalItems = uniqueRecommendations(nextItems).slice(0, RECOMMENDATION_LIMIT);
 
       setRecommendationState((prev) => ({
         ...prev,
@@ -2261,7 +2271,7 @@ export default function App() {
 
         const nextItems = [...currentItems];
         nextItems[targetIndex] = replacement;
-        const finalItems = uniqueRecommendations(nextItems).slice(0, 5);
+        const finalItems = uniqueRecommendations(nextItems).slice(0, RECOMMENDATION_LIMIT);
 
         setRecommendationState((prev) => ({
           ...prev,

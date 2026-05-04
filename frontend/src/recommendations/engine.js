@@ -829,6 +829,7 @@ function selectDiverse(scoredItems, max, options = {}) {
   const minRecentYear = Number.isFinite(options.minRecentYear)
     ? options.minRecentYear
     : 2020;
+  const minimumUsefulResults = Math.min(max, 5);
   let familyAnimationCount = 0;
 
   function alreadySelected(item) {
@@ -851,6 +852,15 @@ function selectDiverse(scoredItems, max, options = {}) {
     if (!canTakeFamilyAnimation(item, true)) return false;
     take(item);
     return true;
+  }
+
+  function takeFrom(items, { enforceFamilyCap = true } = {}) {
+    for (const item of items) {
+      if (selected.length >= max) break;
+      if (alreadySelected(item)) continue;
+      if (enforceFamilyCap && !canTakeFamilyAnimation(item, true)) continue;
+      take(item);
+    }
   }
 
   if (minRecentItems > 0) {
@@ -876,19 +886,20 @@ function selectDiverse(scoredItems, max, options = {}) {
   }
 
   if (selected.length < max) {
-    for (const item of scoredItems) {
-      if (selected.length >= max) break;
-      tryTake(item);
-    }
+    takeFrom(scoredItems, { enforceFamilyCap: true });
   }
 
-  // If the pool is genuinely too small, fill the list rather than returning fewer than 5.
+  // If the pool is genuinely too small, fill the list rather than returning too few.
+  // Once 5 coherent choices exist, keep the family/animation cap instead of padding with cartoons.
   if (selected.length < max) {
-    for (const item of scoredItems) {
-      if (selected.length >= max) break;
-      if (alreadySelected(item)) continue;
-      take(item);
-    }
+    takeFrom(
+      scoredItems.filter((item) => !itemLooksFamilyOrAnimation(item)),
+      { enforceFamilyCap: false }
+    );
+  }
+
+  if (selected.length < max && selected.length < minimumUsefulResults) {
+    takeFrom(scoredItems, { enforceFamilyCap: false });
   }
 
   return selected;
@@ -953,7 +964,7 @@ export function buildRecommendations({
   const familyAnimationCap =
     isToutPublicRequest(globalAnswers.ageRestriction) &&
     !wantsFamilyOrAnimation(requestedGenreTargets)
-      ? 1
+      ? Math.max(1, Math.min(2, Math.floor(max / 3)))
       : Infinity;
   const excluded = new Set(excludedKeys.map((key) => String(key)));
   const avoided = new Set(avoidTitles.map((title) => normalizeText(title)));
@@ -1043,10 +1054,19 @@ export function buildRecommendations({
     return diverse.slice(0, max).map(enrichItem);
   }
 
-  const fallbackPool = (randomize ? shuffle(baseRanked) : baseRanked).filter(
-    (item) => !diverse.some((candidate) => candidate.key === item.key)
-  );
-  let finalItems = [...diverse, ...fallbackPool].slice(0, max);
+  const firstFallbackSource = (randomize ? shuffle(baseRanked) : baseRanked).filter((item) => {
+    if (diverse.some((candidate) => candidate.key === item.key)) return false;
+    if (!Number.isFinite(familyAnimationCap) || !itemLooksFamilyOrAnimation(item)) return true;
+    return false;
+  });
+  let finalItems = [...diverse, ...firstFallbackSource].slice(0, max);
+
+  if (finalItems.length < Math.min(max, 4)) {
+    const relaxedFallback = (randomize ? shuffle(baseRanked) : baseRanked).filter(
+      (item) => !finalItems.some((candidate) => candidate.key === item.key)
+    );
+    finalItems = [...finalItems, ...relaxedFallback].slice(0, max);
+  }
 
   if (finalItems.length < max) {
     const selectedKeys = new Set(finalItems.map((item) => item.key));
@@ -1064,7 +1084,11 @@ export function buildRecommendations({
       })
       .filter(Boolean);
 
-    finalItems = dedupeByTitle([...finalItems, ...emergency]).slice(0, max);
+    finalItems = selectDiverse(dedupeByTitle([...finalItems, ...emergency]), max, {
+      familyAnimationCap,
+      minRecentItems: 0,
+      minRecentYear: 2020,
+    });
   }
 
   return finalItems.map(enrichItem);
