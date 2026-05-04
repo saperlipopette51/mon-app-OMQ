@@ -8,6 +8,10 @@ import QuizScreen from "./src/screens/QuizScreen";
 import RecommendationsScreen from "./src/screens/RecommendationsScreen";
 import FavoritesScreen from "./src/screens/FavoritesScreen";
 import { buildRecommendations, filmKey } from "./src/recommendations/engine";
+import {
+  createInitialPremiumState,
+  getPremiumFeatureAccess,
+} from "./src/premium/premiumConfig";
 
 function normalizeApiBaseUrl(input) {
   let value = String(input || "").trim();
@@ -897,12 +901,12 @@ function uniqueFilms(items) {
 
 function pickCandidatePages() {
   const base = 1 + Math.floor(Math.random() * 4);
-  const pages = [base, base + 1, base + 2, base + 3].map((page) => ((page - 1) % 10) + 1);
+  const pages = [base, base + 1].map((page) => ((page - 1) % 8) + 1);
   return [...new Set(pages)];
 }
 
 function pickWidePages() {
-  return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+  return [1, 2, 3, 4];
 }
 
 function buildFilmsUrl(baseUrl, query = {}) {
@@ -1192,6 +1196,7 @@ function normalizeQuizPayload(payload) {
 
 export default function App() {
   const [screen, setScreen] = useState("home");
+  const [premiumState] = useState(createInitialPremiumState);
   const VALID_SCREENS = ["home", "films", "quiz", "recommendations", "favorites"];
 
   const [filmsState, setFilmsState] = useState({
@@ -1218,6 +1223,11 @@ export default function App() {
   const [preferenceMemory, setPreferenceMemory] = useState({});
   const [memoryHydrated, setMemoryHydrated] = useState(false);
   const [favoritesHydrated, setFavoritesHydrated] = useState(false);
+  const premiumFeatureAccess = useMemo(
+    () => getPremiumFeatureAccess(premiumState),
+    [premiumState]
+  );
+  void premiumFeatureAccess;
 
   useEffect(() => {
     if (!VALID_SCREENS.includes(screen)) {

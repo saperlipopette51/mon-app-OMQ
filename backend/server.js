@@ -118,12 +118,12 @@ const PLATFORM_ALIASES = {
 };
 
 const AGE_CERTIFICATION_LTE = {
-  all: "PG-13",
+  all: "PG",
   12: "PG-13",
 };
 
 const STRICT_CERTIFICATIONS = {
-  all: new Set(["G", "PG", "PG-13"]),
+  all: new Set(["G", "PG", "TV-G", "TV-PG"]),
   12: new Set(["PG-13"]),
   16: new Set(["R"]),
   18: new Set(["R", "NC-17"]),
@@ -675,7 +675,8 @@ function withFallbackContext(films, context = {}) {
 }
 
 function selectedAgeBucket(ageRestriction) {
-  if (ageRestriction === "all" || ageRestriction === "12") return 12;
+  if (ageRestriction === "all") return 0;
+  if (ageRestriction === "12") return 12;
   if (ageRestriction === "16") return 16;
   if (ageRestriction === "18") return 18;
   return null;
@@ -1080,7 +1081,7 @@ async function fetchTmdbFilmsWide({
       : normalizedContentType === "peu-importe" || !normalizedContentType
       ? ["movie", "tv"]
       : ["movie"];
-  const pages = Array.from({ length: 8 }, (_, index) => Math.max(1, page + index));
+  const pages = Array.from({ length: 5 }, (_, index) => Math.max(1, page + index));
   const originCountry = resolveOriginCountry(normalizedOrigin, page);
   const excluded = new Set(
     (Array.isArray(excludeIds) ? excludeIds : []).map((entry) => String(entry))

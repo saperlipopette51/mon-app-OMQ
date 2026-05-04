@@ -268,6 +268,13 @@ function buildFallbackScoredItem({ film, strictTargets, globalAnswers }) {
   const originRequested = strictTargets.origin && strictTargets.origin !== "peu-importe";
   const originMatch = originRequested ? originMatches(strictTargets.origin, film) : null;
   const platformInfo = platformMatchInfo(globalAnswers.platform, film);
+  const genreTargets = uniqueStrings([strictTargets.genre]);
+  const overloadPenalty = familyAnimationOverloadPenalty({
+    selectedAge: globalAnswers.ageRestriction,
+    film,
+    filmGenres,
+    genreTargets,
+  });
 
   const score =
     (genreMatched ? 40 : 0) +
@@ -280,13 +287,17 @@ function buildFallbackScoredItem({ film, strictTargets, globalAnswers }) {
           ? 10
           : 6
         : 0
-      : 10);
+      : 10) -
+    overloadPenalty;
 
   return {
     key: filmKeyOf(film),
     film,
     score: Math.max(8, Math.min(100, Math.round(score))),
-    rankingScore: Math.max(8, Math.min(100, Math.round(score))) + qualityBonus(film) * 4,
+    rankingScore:
+      Math.max(8, Math.min(100, Math.round(score))) +
+      qualityBonus(film) * 4 -
+      overloadPenalty * 0.5,
     primaryGenre,
     contentType,
     matchedUsersCount: 0,
@@ -315,15 +326,19 @@ function parseAgeBucket(value) {
 function parseSelectedAgeBucket(value) {
   const text = normalizeText(value);
   if (!text) return null;
-  // In the quiz, "Tout public" means safe for a family evening, not only G-rated cartoons.
-  // Keep 16+/18+ out, but allow PG/PG-13 so the pool does not collapse to animation only.
-  if (text === "all" || text.includes("tout public")) return 12;
+  // "Tout public" means no age restriction: not 12+, not 16+, not 18+.
+  if (text === "all" || text.includes("tout public")) return 0;
   return parseAgeBucket(value);
 }
 
 function isMatureAgeRequest(value) {
   const text = normalizeText(value);
   return text === "16" || text === "18" || text.includes("16") || text.includes("18");
+}
+
+function isToutPublicRequest(value) {
+  const text = normalizeText(value);
+  return text === "all" || text.includes("tout public");
 }
 
 function looksFamilyOrAnimation(film) {
@@ -340,6 +355,18 @@ function looksFamilyOrAnimation(film) {
   );
 }
 
+function wantsFamilyOrAnimation(genreTargets = []) {
+  return genreTargets.some((genre) => genre === "animation" || genre === "family");
+}
+
+function familyAnimationOverloadPenalty({ selectedAge, film, filmGenres, genreTargets }) {
+  if (!isToutPublicRequest(selectedAge)) return 0;
+  if (wantsFamilyOrAnimation(genreTargets)) return 0;
+  const hasFamilyOrAnimationGenre =
+    filmGenres.includes("animation") || filmGenres.includes("family");
+  return hasFamilyOrAnimationGenre || looksFamilyOrAnimation(film) ? 18 : 0;
+}
+
 function ageMatches(selectedAge, film) {
   const selectedBucket = parseSelectedAgeBucket(selectedAge);
   if (selectedBucket === null) return true;
@@ -352,7 +379,7 @@ function ageMatches(selectedAge, film) {
     if (filmBucket === null) return !looksFamilyOrAnimation(film);
     return selectedBucket >= 18 ? filmBucket >= 16 : filmBucket === 16;
   }
-  if (filmBucket === null) return true;
+  if (filmBucket === null) return selectedBucket > 0;
   return filmBucket <= selectedBucket;
 }
 
@@ -425,7 +452,8 @@ function ageMatchInfo(selectedAge, film) {
     };
   }
   if (filmBucket === null) {
-    return { requested: true, matched: true, known: false, unsafe: false };
+    const unsafe = selectedBucket === 0;
+    return { requested: true, matched: !unsafe, known: false, unsafe };
   }
   return {
     requested: true,
@@ -626,7 +654,6 @@ function scoreFilm(film, context) {
   const { users, globalAnswers, strictTargets } = context;
   const filmGenres = extractGenres(film);
   const contentType = inferContentType(film);
-  const primaryGenre = filmGenres[0] || normalizeGenreToken(film.genre || "");
 
   const ageInfo = ageMatchInfo(globalAnswers.ageRestriction, film);
   // L'age reste une securite: si TMDB indique clairement que c'est trop adulte, on retire.
@@ -638,6 +665,8 @@ function scoreFilm(film, context) {
     strictTargets.genre,
   ]);
   const matchedGenreTokens = genreTargets.filter((genre) => filmGenres.includes(genre));
+  const primaryGenre =
+    matchedGenreTokens[0] || filmGenres[0] || normalizeGenreToken(film.genre || "");
   const genreRatio = genreTargets.length
     ? matchedGenreTokens.length / Math.max(1, genreTargets.length)
     : 1;
@@ -673,9 +702,16 @@ function scoreFilm(film, context) {
     scoreParts.age +
     scoreParts.origin +
     scoreParts.platform;
+  const overloadPenalty = familyAnimationOverloadPenalty({
+    selectedAge: globalAnswers.ageRestriction,
+    film,
+    filmGenres,
+    genreTargets,
+  });
+  score -= overloadPenalty;
 
   // Tiny tie-breaker only for ordering; displayed score stays capped at 100.
-  const rankingScore = score + qualityBonus(film) * 4;
+  const rankingScore = score + qualityBonus(film) * 4 - overloadPenalty * 0.5;
   const boundedPercent = Math.max(8, Math.min(100, Math.round(score)));
 
   const matchDetails = {
