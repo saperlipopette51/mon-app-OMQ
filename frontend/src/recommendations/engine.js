@@ -794,24 +794,66 @@ function dedupeFilmPool(films) {
   return output;
 }
 
-function selectDiverse(scoredItems, max) {
+function itemLooksFamilyOrAnimation(item) {
+  const film = item?.film || item?.raw || item || {};
+  const genres = extractGenres(film);
+  return (
+    item?.primaryGenre === "animation" ||
+    item?.primaryGenre === "family" ||
+    genres.includes("animation") ||
+    genres.includes("family") ||
+    looksFamilyOrAnimation(film)
+  );
+}
+
+function selectDiverse(scoredItems, max, options = {}) {
   const selected = [];
   const genreCounts = new Map();
+  const familyAnimationCap = Number.isFinite(options.familyAnimationCap)
+    ? options.familyAnimationCap
+    : Infinity;
+  let familyAnimationCount = 0;
+
+  function alreadySelected(item) {
+    return selected.some((candidate) => candidate.key === item.key);
+  }
+
+  function canTakeFamilyAnimation(item, enforceCap) {
+    if (!enforceCap) return true;
+    if (!itemLooksFamilyOrAnimation(item)) return true;
+    return familyAnimationCount < familyAnimationCap;
+  }
+
+  function take(item) {
+    selected.push(item);
+    if (itemLooksFamilyOrAnimation(item)) familyAnimationCount += 1;
+  }
 
   for (const item of scoredItems) {
     if (selected.length >= max) break;
+    if (!canTakeFamilyAnimation(item, true)) continue;
     const genre = item.primaryGenre || "autre";
     const count = genreCounts.get(genre) || 0;
     if (count >= 2 && selected.length < max - 1) continue;
-    selected.push(item);
+    take(item);
     genreCounts.set(genre, count + 1);
   }
 
   if (selected.length < max) {
     for (const item of scoredItems) {
       if (selected.length >= max) break;
-      if (selected.some((candidate) => candidate.key === item.key)) continue;
-      selected.push(item);
+      if (alreadySelected(item)) continue;
+      if (!canTakeFamilyAnimation(item, true)) continue;
+      take(item);
+    }
+  }
+
+  // If the pool is genuinely too small, fill the list rather than returning fewer than 5.
+  if (selected.length < max) {
+    for (const item of scoredItems) {
+      if (selected.length >= max) break;
+      if (alreadySelected(item)) continue;
+      take(item);
     }
   }
 
@@ -870,6 +912,15 @@ export function buildRecommendations({
   const users = buildUserList(quizPayload, answers);
   const globalAnswers = buildGlobalAnswers(quizPayload, answers);
   const strictTargets = buildStrictTargets(quizPayload, answers);
+  const requestedGenreTargets = uniqueStrings([
+    strictTargets.genre,
+    ...users.map((user) => user.genre),
+  ]);
+  const familyAnimationCap =
+    isToutPublicRequest(globalAnswers.ageRestriction) &&
+    !wantsFamilyOrAnimation(requestedGenreTargets)
+      ? 1
+      : Infinity;
   const excluded = new Set(excludedKeys.map((key) => String(key)));
   const avoided = new Set(avoidTitles.map((title) => normalizeText(title)));
 
@@ -948,7 +999,7 @@ export function buildRecommendations({
   const filteredRanked = ranked.filter((item) => item.score >= minScore);
   const baseRanked = filteredRanked.length >= max ? filteredRanked : ranked;
   const ordered = randomize ? buildRandomizedOrder(baseRanked) : buildVariedOrder(baseRanked);
-  const diverse = selectDiverse(ordered, max);
+  const diverse = selectDiverse(ordered, max, { familyAnimationCap });
 
   if (diverse.length >= max) {
     return diverse.slice(0, max).map(enrichItem);

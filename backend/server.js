@@ -809,13 +809,48 @@ function scoreFilmForBackend(film, { genre, genres, contentType, ageRestriction,
   };
 }
 
-function diversifyRankedFilms(rankedFilms, limit = 90) {
+function isFamilyOrAnimationFilm(film) {
+  const genreIds = Array.isArray(film?.genre_ids) ? film.genre_ids.map(Number) : [];
+  return genreIds.includes(16) || genreIds.includes(10751);
+}
+
+function requestedFamilyOrAnimation(genres = []) {
+  return normalizeGenreIds(genres).some((genreId) => genreId === "16" || genreId === "10751");
+}
+
+function diversifyRankedFilms(rankedFilms, limit = 90, options = {}) {
   if (!rankedFilms.length) return [];
   const lead = rankedFilms.slice(0, Math.min(3, rankedFilms.length));
   const window = rankedFilms.slice(lead.length, Math.min(45, rankedFilms.length));
   const rest = rankedFilms.slice(Math.min(45, rankedFilms.length));
   const shuffledWindow = [...window].sort(() => Math.random() - 0.5);
-  return [...lead, ...shuffledWindow, ...rest].slice(0, limit);
+  const ordered = [...lead, ...shuffledWindow, ...rest];
+  const familyAnimationCap = Number.isFinite(options.familyAnimationCap)
+    ? options.familyAnimationCap
+    : Infinity;
+  const selected = [];
+  let familyAnimationCount = 0;
+
+  for (const film of ordered) {
+    if (selected.length >= limit) break;
+    const familyAnimation = isFamilyOrAnimationFilm(film);
+    if (familyAnimation && familyAnimationCount >= familyAnimationCap) continue;
+    selected.push(film);
+    if (familyAnimation) familyAnimationCount += 1;
+  }
+
+  if (selected.length < limit) {
+    const selectedKeys = new Set(selected.map((film) => `${film?.type || "film"}:${film?.id}`));
+    for (const film of ordered) {
+      if (selected.length >= limit) break;
+      const key = `${film?.type || "film"}:${film?.id}`;
+      if (selectedKeys.has(key)) continue;
+      selected.push(film);
+      selectedKeys.add(key);
+    }
+  }
+
+  return selected;
 }
 
 async function fetchTmdbFilms({
@@ -970,9 +1005,11 @@ async function fetchTmdbDiscoverWidePage({
   language,
   genre,
   platform = "",
+  ageRestriction = "",
   originCountry = "",
 }) {
   const normalizedPlatform = normalizePlatform(platform);
+  const normalizedAgeRestriction = normalizeAgeRestriction(ageRestriction);
   const normalizedGenreId = normalizeGenreId(genre);
   const withGenresParam = resolveWithGenresParam(normalizedGenreId, mediaType);
   const url = new URL(`${TMDB_BASE_URL}/discover/${mediaType}`);
@@ -997,6 +1034,18 @@ async function fetchTmdbDiscoverWidePage({
   }
   if (originCountry) {
     url.searchParams.set("with_origin_country", originCountry);
+  }
+  if (mediaType === "movie" && normalizedAgeRestriction && normalizedAgeRestriction !== "18") {
+    const certificationLte = AGE_CERTIFICATION_LTE[normalizedAgeRestriction];
+    if (certificationLte) {
+      url.searchParams.set("certification_country", "US");
+      url.searchParams.set("certification.lte", certificationLte);
+    }
+  }
+  if (mediaType === "movie" && normalizedAgeRestriction === "16") {
+    url.searchParams.set("certification_country", "US");
+    url.searchParams.set("certification.gte", "R");
+    url.searchParams.set("certification.lte", "R");
   }
 
   const controller = new AbortController();
@@ -1029,6 +1078,7 @@ async function fetchTmdbDiscoverWidePage({
       .map((movie) =>
         formatTmdbMovie(movie, {
           platform: normalizedPlatform,
+          ageRestriction: normalizedAgeRestriction,
           originCountry,
         })
       )
@@ -1098,6 +1148,7 @@ async function fetchTmdbFilmsWide({
             page: pageNumber,
             language,
             genre: genreId,
+            ageRestriction: normalizedAgeRestriction,
           })
         );
       }
@@ -1111,6 +1162,7 @@ async function fetchTmdbFilmsWide({
               language,
               genre: genreId,
               platform: normalizedPlatform,
+              ageRestriction: normalizedAgeRestriction,
             })
           );
         }
@@ -1124,6 +1176,7 @@ async function fetchTmdbFilmsWide({
               page: pageNumber,
               language,
               genre: genreId,
+              ageRestriction: normalizedAgeRestriction,
               originCountry,
             })
           );
@@ -1138,6 +1191,7 @@ async function fetchTmdbFilmsWide({
             language,
             genre: genreId,
             platform: normalizedPlatform,
+            ageRestriction: normalizedAgeRestriction,
             originCountry,
           })
         );
@@ -1171,7 +1225,11 @@ async function fetchTmdbFilmsWide({
     .filter(Boolean)
     .sort((a, b) => Number(b.backend_rank_score || 0) - Number(a.backend_rank_score || 0));
 
-  const diversified = diversifyRankedFilms(scored, 90);
+  const familyAnimationCap =
+    normalizedAgeRestriction === "all" && !requestedFamilyOrAnimation(normalizedGenreIds)
+      ? 18
+      : Infinity;
+  const diversified = diversifyRankedFilms(scored, 90, { familyAnimationCap });
   const notice =
     scored.length < 5
       ? "Peu de resultats exacts: OMQ a elargi intelligemment le pool TMDB."
