@@ -710,7 +710,8 @@ function filmAgeScore(ageRestriction, film) {
     return bucket >= 16 ? 15 : 0;
   }
 
-  if (bucket === null) return 8;
+  // "Tout public" must not include unknown age ratings, because unknown can hide 12+/16+/18+.
+  if (bucket === null) return selected === 0 ? 0 : 8;
   return bucket <= selected ? 15 : 0;
 }
 
