@@ -15,7 +15,12 @@ const TMDB_BEARER_TOKEN = String(process.env.TMDB_BEARER_TOKEN || "").trim();
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 const FILMS_CACHE_TTL_MS = Number(process.env.FILMS_CACHE_TTL_MS || 10 * 60 * 1000);
 const FILMS_CACHE_MAX_ENTRIES = Number(process.env.FILMS_CACHE_MAX_ENTRIES || 150);
+const TMDB_CACHE_TTL_MS = Number(process.env.TMDB_CACHE_TTL_MS || 5 * 60 * 1000);
+const TMDB_CACHE_MAX_ENTRIES = Number(process.env.TMDB_CACHE_MAX_ENTRIES || 300);
 const filmsCache = new Map();
+const filmsInFlight = new Map();
+const tmdbJsonCache = new Map();
+const tmdbInFlight = new Map();
 const movieCertificationCache = new Map();
 
 const GENRE_NAMES = {
@@ -272,7 +277,7 @@ function getCachedFilms(cacheKey) {
 }
 
 function setCachedFilms(cacheKey, films) {
-  if (!Array.isArray(films)) return;
+  if (films === null || films === undefined) return;
   filmsCache.set(cacheKey, {
     expiresAt: Date.now() + FILMS_CACHE_TTL_MS,
     data: films,
@@ -281,6 +286,79 @@ function setCachedFilms(cacheKey, films) {
   if (filmsCache.size <= FILMS_CACHE_MAX_ENTRIES) return;
   const oldestKey = filmsCache.keys().next().value;
   if (oldestKey) filmsCache.delete(oldestKey);
+}
+
+function getCachedTmdbJson(cacheKey) {
+  const entry = tmdbJsonCache.get(cacheKey);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    tmdbJsonCache.delete(cacheKey);
+    return null;
+  }
+  return entry.data;
+}
+
+function setCachedTmdbJson(cacheKey, data) {
+  tmdbJsonCache.set(cacheKey, {
+    expiresAt: Date.now() + TMDB_CACHE_TTL_MS,
+    data,
+  });
+
+  if (tmdbJsonCache.size <= TMDB_CACHE_MAX_ENTRIES) return;
+  const oldestKey = tmdbJsonCache.keys().next().value;
+  if (oldestKey) tmdbJsonCache.delete(oldestKey);
+}
+
+async function fetchTmdbJson(url, timeoutMs = 9000, retries = 1) {
+  const cacheKey = String(url || "");
+  const cached = getCachedTmdbJson(cacheKey);
+  if (cached) return cached;
+  if (tmdbInFlight.has(cacheKey)) return tmdbInFlight.get(cacheKey);
+
+  const promise = (async () => {
+    let lastError = null;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      const startedAt = Date.now();
+      try {
+        const response = await fetch(cacheKey, {
+          method: "GET",
+          headers: tmdbHeaders(),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          throw new Error(`TMDB HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        setCachedTmdbJson(cacheKey, payload);
+        console.log("[TMDB] response", {
+          ms: Date.now() - startedAt,
+          attempt: attempt + 1,
+        });
+        return payload;
+      } catch (error) {
+        lastError = error;
+        console.log("[TMDB] request retry", {
+          attempt: attempt + 1,
+          retries,
+          message: String(error?.message || error),
+        });
+        if (attempt >= retries) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    throw lastError;
+  })();
+
+  tmdbInFlight.set(cacheKey, promise);
+  try {
+    return await promise;
+  } finally {
+    tmdbInFlight.delete(cacheKey);
+  }
 }
 
 app.use(cors({ origin: "*" }));
@@ -468,27 +546,14 @@ async function fetchTmdbMovieCertification(movieId) {
     url.searchParams.set("api_key", TMDB_API_KEY);
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 7000);
   try {
-    const response = await fetch(url.toString(), {
-      method: "GET",
-      headers: tmdbHeaders(),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      movieCertificationCache.set(cacheKey, "");
-      return "";
-    }
-    const payload = await response.json();
+    const payload = await fetchTmdbJson(url.toString(), 7000, 1);
     const certification = pickCertificationFromReleaseDates(payload);
     movieCertificationCache.set(cacheKey, certification);
     return certification;
   } catch {
     movieCertificationCache.set(cacheKey, "");
     return "";
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -789,7 +854,6 @@ function scoreFilmForBackend(film, { genre, genres, contentType, ageRestriction,
   const normalizedAgeRestriction = normalizeAgeRestriction(ageRestriction);
   const normalizedPlatform = normalizePlatform(platform);
   const animationBlocked =
-    normalizedAgeRestriction === "all" &&
     !requestedFamilyOrAnimation(activeGenres) &&
     normalizedPlatform !== "disney-plus" &&
     isFamilyOrAnimationFilm(film);
@@ -937,18 +1001,8 @@ async function fetchTmdbFilms({
     url.searchParams.set("certification.gte", "R");
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const response = await fetch(url.toString(), {
-      method: "GET",
-      headers: tmdbHeaders(),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      throw new Error(`TMDB HTTP ${response.status}`);
-    }
-    const payload = await response.json();
+    const payload = await fetchTmdbJson(url.toString(), 10000, 1);
     const results = Array.isArray(payload?.results) ? payload.results : [];
 
     if (mediaType === "tv") {
@@ -1014,8 +1068,8 @@ async function fetchTmdbFilms({
       films: formatted,
       notice: "Aucun film ne correspond exactement, élargissement des critères",
     };
-  } finally {
-    clearTimeout(timeout);
+  } catch (error) {
+    throw error;
   }
 }
 
@@ -1068,18 +1122,8 @@ async function fetchTmdbDiscoverWidePage({
     url.searchParams.set("certification.lte", "R");
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    const response = await fetch(url.toString(), {
-      method: "GET",
-      headers: tmdbHeaders(),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      throw new Error(`TMDB HTTP ${response.status}`);
-    }
-    const payload = await response.json();
+    const payload = await fetchTmdbJson(url.toString(), 10000, 1);
     const results = Array.isArray(payload?.results) ? payload.results : [];
 
     if (mediaType === "tv") {
@@ -1103,8 +1147,8 @@ async function fetchTmdbDiscoverWidePage({
         })
       )
       .filter(Boolean);
-  } finally {
-    clearTimeout(timeout);
+  } catch (error) {
+    throw error;
   }
 }
 
@@ -1246,7 +1290,6 @@ async function fetchTmdbFilmsWide({
     .sort((a, b) => Number(b.backend_rank_score || 0) - Number(a.backend_rank_score || 0));
 
   const familyAnimationCap =
-    normalizedAgeRestriction === "all" &&
     !requestedFamilyOrAnimation(normalizedGenreIds) &&
     normalizedPlatform !== "disney-plus"
       ? 0

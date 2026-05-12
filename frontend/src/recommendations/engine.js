@@ -389,7 +389,6 @@ function disneyIsRequested(globalAnswers = {}) {
 
 function shouldBlockAnimation({ globalAnswers, genreTargets, film }) {
   return (
-    isToutPublicRequest(globalAnswers?.ageRestriction) &&
     !wantsAnimation(genreTargets) &&
     !disneyIsRequested(globalAnswers) &&
     looksAnimated(film)
@@ -860,6 +859,13 @@ function itemMatchesGenreTargets(item, genreTargets = []) {
   return genreTargets.some((genre) => genres.includes(genre));
 }
 
+function itemMatchesContentType(item, contentType = "") {
+  const requestedType = normalizeText(contentType);
+  if (!requestedType || requestedType === "peu-importe") return true;
+  const film = item?.film || item?.raw || item || {};
+  return inferContentType(film) === requestedType;
+}
+
 function itemYear(item) {
   const film = item?.film || item?.raw || item || {};
   return normalizeYear(film.year) || normalizeYear(film.release_date) || 0;
@@ -1016,7 +1022,6 @@ export function buildRecommendations({
     ...users.map((user) => user.genre),
   ]);
   const familyAnimationCap =
-    isToutPublicRequest(globalAnswers.ageRestriction) &&
     !wantsAnimation(requestedGenreTargets) &&
     !disneyIsRequested(globalAnswers)
       ? 0
@@ -1029,6 +1034,7 @@ export function buildRecommendations({
   const scored = candidateFilms
     .map((film) => scoreFilm(film, { users, globalAnswers, strictTargets }))
     .filter(Boolean)
+    .filter((item) => itemMatchesContentType(item, strictTargets.contentType))
     .filter((item) =>
       shouldBlockAnimation({
         globalAnswers,
@@ -1084,6 +1090,9 @@ export function buildRecommendations({
         if (shouldBlockAnimation({ globalAnswers, genreTargets: requestedGenreTargets, film })) {
           return null;
         }
+        if (!itemMatchesContentType(film, strictTargets.contentType)) {
+          return null;
+        }
         if (!itemMatchesGenreTargets(film, requestedGenreTargets)) {
           return null;
         }
@@ -1103,6 +1112,7 @@ export function buildRecommendations({
       .filter(
         (film) =>
           !shouldBlockAnimation({ globalAnswers, genreTargets: requestedGenreTargets, film }) &&
+          itemMatchesContentType(film, strictTargets.contentType) &&
           itemMatchesGenreTargets(film, requestedGenreTargets)
       )
       .map((film) => buildFallbackScoredItem({ film, strictTargets, globalAnswers }))
@@ -1121,13 +1131,14 @@ export function buildRecommendations({
   const ordered = randomize ? buildRandomizedOrder(baseRanked) : buildVariedOrder(baseRanked);
   const diverse = selectDiverse(ordered, max, {
     familyAnimationCap,
-    minRecentItems: 2,
+    minRecentItems: 3,
     minRecentYear: 2020,
   });
 
   if (diverse.length >= max) {
     return diverse
       .filter((item) => itemMatchesGenreTargets(item, requestedGenreTargets))
+      .filter((item) => itemMatchesContentType(item, strictTargets.contentType))
       .slice(0, max)
       .map(enrichItem);
   }
@@ -1135,6 +1146,7 @@ export function buildRecommendations({
   const firstFallbackSource = (randomize ? shuffle(baseRanked) : baseRanked).filter((item) => {
     if (diverse.some((candidate) => candidate.key === item.key)) return false;
     if (!itemMatchesGenreTargets(item, requestedGenreTargets)) return false;
+    if (!itemMatchesContentType(item, strictTargets.contentType)) return false;
     if (!Number.isFinite(familyAnimationCap) || !itemLooksAnimated(item)) return true;
     return false;
   });
@@ -1144,6 +1156,7 @@ export function buildRecommendations({
     const relaxedFallback = (randomize ? shuffle(baseRanked) : baseRanked).filter(
       (item) =>
         !finalItems.some((candidate) => candidate.key === item.key) &&
+        itemMatchesContentType(item, strictTargets.contentType) &&
         itemMatchesGenreTargets(item, requestedGenreTargets)
     );
     finalItems = [...finalItems, ...relaxedFallback].slice(0, max);
@@ -1164,6 +1177,9 @@ export function buildRecommendations({
         if (shouldBlockAnimation({ globalAnswers, genreTargets: requestedGenreTargets, film })) {
           return null;
         }
+        if (!itemMatchesContentType(film, strictTargets.contentType)) {
+          return null;
+        }
         if (!itemMatchesGenreTargets(film, requestedGenreTargets)) {
           return null;
         }
@@ -1180,6 +1196,7 @@ export function buildRecommendations({
 
   return finalItems
     .filter((item) => itemMatchesGenreTargets(item, requestedGenreTargets))
+    .filter((item) => itemMatchesContentType(item, strictTargets.contentType))
     .map(enrichItem);
 }
 

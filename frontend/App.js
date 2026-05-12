@@ -2,6 +2,7 @@ import { StatusBar } from "expo-status-bar";
 import Constants from "expo-constants";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Image } from "react-native";
 import HomeScreen from "./src/screens/HomeScreen";
 import FilmsScreen from "./src/screens/FilmsScreen";
 import QuizScreen from "./src/screens/QuizScreen";
@@ -45,6 +46,8 @@ function getRuntimeMode() {
   return typeof __DEV__ !== "undefined" && __DEV__ ? "development" : "release";
 }
 
+const DEFAULT_PROD_API_URL = "https://omq-backend-jtav.onrender.com";
+
 function resolveApiBaseUrl() {
   const runtime = getRuntimeMode();
   const expoExtra = Constants?.expoConfig?.extra || {};
@@ -56,6 +59,7 @@ function resolveApiBaseUrl() {
     { label: "extra:prodApiBaseUrl", value: expoExtra.prodApiBaseUrl },
     { label: "manifest:prodApiUrl", value: manifestExtra.prodApiUrl },
     { label: "manifest:prodApiBaseUrl", value: manifestExtra.prodApiBaseUrl },
+    { label: "default:prodApiUrl", value: DEFAULT_PROD_API_URL },
   ];
   const developmentCandidates = [
     { label: "env:EXPO_PUBLIC_API_URL", value: process.env.EXPO_PUBLIC_API_URL },
@@ -80,6 +84,10 @@ function resolveApiBaseUrl() {
     try {
       const parsed = new URL(normalized);
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        hasInvalidCandidate = true;
+        continue;
+      }
+      if (runtime === "release" && isPrivateApiBaseUrl(normalized)) {
         hasInvalidCandidate = true;
         continue;
       }
@@ -114,6 +122,10 @@ const API_UNAVAILABLE_MESSAGE =
 const PREFERENCE_STORAGE_KEY = "@omq/preference-memory/v1";
 const FAVORITES_STORAGE_KEY = "@omq/favorites/v1";
 const RECOMMENDATION_LIMIT = 5;
+const API_RESPONSE_CACHE_TTL_MS = 2 * 60 * 1000;
+const API_RESPONSE_CACHE_MAX_ENTRIES = 80;
+const apiResponseCache = new Map();
+const apiResponseInFlight = new Map();
 const NO_MATCH_MESSAGE =
   "OMQ a fouille sous tous les coussins du canape, mais rien ne matche vraiment. On refait le quiz avec des criteres un peu moins corses ?";
 const PLATFORM_CANONICAL_MAP = {
@@ -575,10 +587,7 @@ function quizAllowsAnimation(quizPayload = {}) {
 }
 
 function quizBlocksAnimation(quizPayload = {}) {
-  const ageRestriction = String(quizPayload?.globalAnswers?.ageRestriction || "")
-    .trim()
-    .toLowerCase();
-  return (ageRestriction === "all" || ageRestriction.includes("tout public")) && !quizAllowsAnimation(quizPayload);
+  return !quizAllowsAnimation(quizPayload);
 }
 
 function filmAllowedByAnimationRule(film, quizPayload = {}) {
@@ -713,40 +722,75 @@ function pickFirstDifferentFilm({
   return candidates[Math.floor(Math.random() * candidates.length)] || null;
 }
 
-async function fetchJsonWithTimeout(url, timeoutMs = 9000) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  const startedAt = Date.now();
-  console.log("[API] request", { url, timeoutMs });
-  try {
-    const response = await fetch(url, { signal: controller.signal });
-    const rawBody = await response.text();
-    const parsedBody = safeParseJson(rawBody, {});
-    const itemCount = Array.isArray(parsedBody)
-      ? parsedBody.length
-      : Array.isArray(parsedBody?.value)
-      ? parsedBody.value.length
-      : 0;
-    console.log("[API] response", {
-      url,
-      status: response.status,
-      ok: response.ok,
-      ms: Date.now() - startedAt,
-      itemCount,
-    });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${rawBody.slice(0, 160)}`);
+async function fetchJsonWithTimeout(url, timeoutMs = 12000) {
+  const cacheKey = String(url || "");
+  const cached = apiResponseCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    console.log("[API] cache:hit", { url: cacheKey });
+    return cached.data;
+  }
+  if (apiResponseInFlight.has(cacheKey)) {
+    console.log("[API] inflight:reuse", { url: cacheKey });
+    return apiResponseInFlight.get(cacheKey);
+  }
+
+  const promise = (async () => {
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      const startedAt = Date.now();
+      console.log("[API] request", { url: cacheKey, timeoutMs, attempt: attempt + 1 });
+      try {
+        const response = await fetch(cacheKey, { signal: controller.signal });
+        const rawBody = await response.text();
+        const parsedBody = safeParseJson(rawBody, {});
+        const itemCount = Array.isArray(parsedBody)
+          ? parsedBody.length
+          : Array.isArray(parsedBody?.value)
+          ? parsedBody.value.length
+          : 0;
+        console.log("[API] response", {
+          url: cacheKey,
+          status: response.status,
+          ok: response.ok,
+          ms: Date.now() - startedAt,
+          itemCount,
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${rawBody.slice(0, 160)}`);
+        }
+        apiResponseCache.set(cacheKey, {
+          expiresAt: Date.now() + API_RESPONSE_CACHE_TTL_MS,
+          data: parsedBody,
+        });
+        if (apiResponseCache.size > API_RESPONSE_CACHE_MAX_ENTRIES) {
+          const oldestKey = apiResponseCache.keys().next().value;
+          if (oldestKey) apiResponseCache.delete(oldestKey);
+        }
+        return parsedBody;
+      } catch (error) {
+        lastError = error;
+        console.log("[API] error", {
+          url: cacheKey,
+          ms: Date.now() - startedAt,
+          attempt: attempt + 1,
+          message: String(error?.message || error),
+        });
+        if (attempt >= 1) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      } finally {
+        clearTimeout(timeoutId);
+      }
     }
-    return parsedBody;
-  } catch (error) {
-    console.log("[API] error", {
-      url,
-      ms: Date.now() - startedAt,
-      message: String(error?.message || error),
-    });
-    throw error;
+    throw lastError;
+  })();
+
+  apiResponseInFlight.set(cacheKey, promise);
+  try {
+    return await promise;
   } finally {
-    clearTimeout(timeoutId);
+    apiResponseInFlight.delete(cacheKey);
   }
 }
 
@@ -783,6 +827,22 @@ async function checkBackendHealth(apiBaseUrl, timeoutMs = 2500) {
   }
 
   return { ok: false, reason: "unreachable" };
+}
+
+function prefetchRecommendationPosters(items = []) {
+  const posterUris = (Array.isArray(items) ? items : [])
+    .map((item) => String(item?.posterUri || "").trim())
+    .filter((uri) => /^https?:\/\//i.test(uri))
+    .slice(0, RECOMMENDATION_LIMIT);
+
+  if (!posterUris.length) return;
+
+  Promise.allSettled(posterUris.map((uri) => Image.prefetch(uri))).then((results) => {
+    console.log("[IMG] posters prefetched", {
+      requested: posterUris.length,
+      ok: results.filter((result) => result.status === "fulfilled").length,
+    });
+  });
 }
 
 function normalizeTitle(value) {
@@ -876,6 +936,13 @@ function withItemPlatform(item, platformValue) {
       platform: label,
     },
   };
+}
+
+function withDisplayPlatformFallback(item, selectedPlatforms = [], index = 0) {
+  if (item?.raw?.platform) return item;
+  if (!Array.isArray(selectedPlatforms) || selectedPlatforms.length === 0) return item;
+  const platform = selectedPlatforms[index % selectedPlatforms.length];
+  return withItemPlatform(item, platform);
 }
 
 function normalizePlatformList(value) {
@@ -1147,6 +1214,7 @@ function buildRecommendationsForPlatforms({
     },
   ];
 
+  const originalPlatforms = getSelectedPlatforms(quizPayload?.globalAnswers || {});
   let merged = [];
   for (const stage of stages) {
     if (merged.length >= max) break;
@@ -1170,7 +1238,10 @@ function buildRecommendationsForPlatforms({
     });
 
     if (stageItems.length > 0) {
-      merged = uniqueRecommendations([...merged, ...stageItems]).slice(0, max);
+      const labeledStageItems = stageItems.map((item, index) =>
+        withDisplayPlatformFallback(item, originalPlatforms, merged.length + index)
+      );
+      merged = uniqueRecommendations([...merged, ...labeledStageItems]).slice(0, max);
     }
   }
 
@@ -1650,6 +1721,7 @@ export default function App() {
 
         registerUsedTitles(uniqueItems);
         console.log("[RECO] resultat final genere", uniqueItems);
+        prefetchRecommendationPosters(uniqueItems);
 
         setRecommendationState({
           loading: false,
@@ -1715,7 +1787,10 @@ export default function App() {
       let notice = "";
       const backendAvailability = await resolveBackendAvailability();
 
-      if (!backendAvailability.ok) {
+      if (
+        !backendAvailability.ok &&
+        (backendAvailability.reason === "bad_url" || backendAvailability.reason === "missing_url")
+      ) {
         notice =
           backendAvailability.reason === "bad_url"
             ? "API_URL invalide. Configure une URL API valide."
@@ -1738,6 +1813,10 @@ export default function App() {
         console.log("[RECO] API indisponible: recommandations bloquees", backendAvailability);
         return;
       } else {
+        if (!backendAvailability.ok) {
+          notice = "Connexion au catalogue en cours, OMQ reveille les pop-corns...";
+          console.log("[RECO] health check lent, tentative de fetch directe", backendAvailability);
+        }
         try {
           const selectedPlatforms = getSelectedPlatforms(quizPayload.globalAnswers || {});
           const requestedGenres = getRequestedGenres(quizPayload);
@@ -2517,6 +2596,9 @@ export default function App() {
           loading={recommendationState.loading}
           error={recommendationState.error}
           notice={recommendationState.notice}
+          selectedPlatforms={getSelectedPlatforms(
+            recommendationState.quizPayload?.globalAnswers || {}
+          ).map(toPlatformLabel)}
           onBack={() => setScreen("home")}
           onRestartQuiz={() => setScreen("quiz")}
           onSurprise={handleSurpriseAction}

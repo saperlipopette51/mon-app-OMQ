@@ -2,7 +2,7 @@
   "expo": {
     "name": "On Mate Quoi",
     "slug": "on-mate-quoi",
-    "version": "1.0.0",
+    "version": "1.0.5",
     "orientation": "portrait",
     "icon": "./assets/launcher-pop-et-corn.png",
     "userInterfaceStyle": "dark",
@@ -19,6 +19,7 @@
       },
       "usesCleartextTraffic": true,
       "package": "com.cesoir.onmatequoi",
+      "versionCode": 8,
       "permissions": [
         "INTERNET"
       ]
@@ -35,8 +36,8 @@
       "apiBaseUrl": "",
       "devApiUrl": "",
       "devApiBaseUrl": "",
-      "prodApiUrl": "",
-      "prodApiBaseUrl": ""
+      "prodApiUrl": "https://omq-backend-jtav.onrender.com",
+      "prodApiBaseUrl": "https://omq-backend-jtav.onrender.com"
     }
   }
 }

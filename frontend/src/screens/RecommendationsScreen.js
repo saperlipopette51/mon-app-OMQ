@@ -65,11 +65,126 @@ function getPlatformVisual(platform) {
   return "\u{1F3AC}";
 }
 
+const LOADING_MESSAGES = [
+  "OMQ trie les navets...",
+  "On secoue le cornet...",
+  "Les plateformes passent au casting...",
+  "Attrape les grains blancs, evite les jaunes.",
+  "On cherche le match parfait...",
+];
+
+function buildPopcornPieces(round) {
+  const slots = [
+    { left: 8, bottom: 34, rotation: -12 },
+    { left: 24, bottom: 94, rotation: 10 },
+    { left: 42, bottom: 58, rotation: -4 },
+    { left: 60, bottom: 112, rotation: 15 },
+    { left: 78, bottom: 48, rotation: -10 },
+    { left: 88, bottom: 96, rotation: 8 },
+  ];
+
+  return slots.map((slot, index) => {
+    const isTrap = (round + index) % 4 === 0;
+    return {
+      id: `${round}-${index}`,
+      type: isTrap ? "trap" : "popped",
+      points: isTrap ? -2 : 3,
+      ...slot,
+    };
+  });
+}
+
+function PopcornGrainVisual({ type }) {
+  if (type === "trap") {
+    return (
+      <View style={styles.cornKernel}>
+        <View style={styles.cornKernelHighlight} />
+        <View style={styles.cornKernelTip} />
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.poppedKernel}>
+      <View style={[styles.popcornBlob, styles.popcornBlobTop]} />
+      <View style={[styles.popcornBlob, styles.popcornBlobLeft]} />
+      <View style={[styles.popcornBlob, styles.popcornBlobRight]} />
+      <View style={[styles.popcornBlob, styles.popcornBlobBottom]} />
+      <View style={[styles.popcornBlob, styles.popcornBlobCenter]} />
+    </View>
+  );
+}
+
+function PopcornLoadingGame() {
+  const [score, setScore] = useState(0);
+  const [pieces, setPieces] = useState(() => buildPopcornPieces(0));
+  const [messageIndex, setMessageIndex] = useState(0);
+  const [feedback, setFeedback] = useState("Grain blanc souffle = +3. Grain jaune = piege.");
+
+  useEffect(() => {
+    let nextRound = 1;
+    const interval = setInterval(() => {
+      setPieces(buildPopcornPieces(nextRound));
+      setMessageIndex((current) => (current + 1) % LOADING_MESSAGES.length);
+      nextRound += 1;
+    }, 950);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const handlePress = (piece) => {
+    setPieces((current) => current.filter((candidate) => candidate.id !== piece.id));
+    setScore((current) => Math.max(0, current + piece.points));
+    setFeedback(piece.points > 0 ? "+3 points, bien attrape !" : "Oups, grain pas souffle !");
+  };
+
+  return (
+    <View style={[styles.card, styles.loadingGameCard]}>
+      <View style={styles.loadingHeader}>
+        <View>
+          <Text style={styles.loadingTitle}>OMQ cherche les meilleures solutions</Text>
+          <Text style={styles.loadingHint}>{LOADING_MESSAGES[messageIndex]}</Text>
+        </View>
+        <View style={styles.scorePill}>
+          <Text style={styles.scoreLabel}>Score</Text>
+          <Text style={styles.scoreValue}>{score}</Text>
+        </View>
+      </View>
+
+      <View style={styles.popcornStage}>
+        <Text style={styles.popcornBowl}>{"\u{1F37F}"}</Text>
+        {pieces.map((piece) => (
+          <Pressable
+            key={piece.id}
+            onPress={() => handlePress(piece)}
+            accessibilityRole="button"
+            accessibilityLabel={piece.type === "trap" ? "Grain de mais piege" : "Grain de popcorn souffle"}
+            style={[
+              styles.popcornPiece,
+              {
+                left: `${piece.left}%`,
+                bottom: piece.bottom,
+                transform: [{ rotate: `${piece.rotation}deg` }],
+              },
+              piece.type === "trap" && styles.trapPiece,
+            ]}
+          >
+            <PopcornGrainVisual type={piece.type} />
+          </Pressable>
+        ))}
+      </View>
+
+      <Text style={styles.loadingFeedback}>{feedback}</Text>
+    </View>
+  );
+}
+
 export default function RecommendationsScreen({
   items = [],
   loading = false,
   error = "",
   notice = "",
+  selectedPlatforms = [],
   onBack = () => {},
   onRestartQuiz = () => {},
   onSurprise = () => {},
@@ -85,6 +200,15 @@ export default function RecommendationsScreen({
 }) {
   const safeItems = Array.isArray(items) ? items : [];
   const displayItems = safeItems.slice(0, 5);
+  const platformLabels = Array.isArray(selectedPlatforms)
+    ? selectedPlatforms.map((platform) => String(platform || "").trim()).filter(Boolean)
+    : [];
+  const getDisplayPlatform = (item, index) => {
+    const itemPlatform = String(item?.raw?.platform || item?.platform || "").trim();
+    if (itemPlatform) return itemPlatform;
+    return platformLabels[index % Math.max(1, platformLabels.length)] || "";
+  };
+
   return (
     <SafeAreaView style={styles.safe}>
       <ScrollView contentContainerStyle={styles.container}>
@@ -104,9 +228,7 @@ export default function RecommendationsScreen({
         )}
 
         {loading ? (
-          <View style={styles.card}>
-            <Text style={styles.loading}>Recherche en cours...</Text>
-          </View>
+          <PopcornLoadingGame />
         ) : error ? (
           <View style={styles.card}>
             <Text style={styles.error}>{error}</Text>
@@ -127,6 +249,7 @@ export default function RecommendationsScreen({
             const safeItem = item || {};
             const computedKey = String(filmKey(safeItem));
             const key = computedKey || String(safeItem.key || safeItem.id || `rec-${index}`);
+            const displayPlatform = getDisplayPlatform(safeItem, index);
             return (
               <View key={key} style={styles.card}>
                 <View style={styles.row}>
@@ -139,9 +262,9 @@ export default function RecommendationsScreen({
                     </Text>
                     <View style={styles.matchRow}>
                       <Text style={styles.match}>Match {safeItem.score || 0}%</Text>
-                      {!!safeItem?.raw?.platform && (
+                      {!!displayPlatform && (
                         <Text style={styles.platformInline}>
-                          {getPlatformVisual(safeItem.raw.platform)} {safeItem.raw.platform}
+                          {getPlatformVisual(displayPlatform)} Plateforme : {displayPlatform}
                         </Text>
                       )}
                     </View>
@@ -227,6 +350,168 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontSize: 15,
     fontWeight: "700",
+  },
+  loadingGameCard: {
+    overflow: "hidden",
+  },
+  loadingHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  loadingTitle: {
+    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: "900",
+    lineHeight: 24,
+  },
+  loadingHint: {
+    color: COLORS.textMuted,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 18,
+    marginTop: 4,
+  },
+  scorePill: {
+    minWidth: 72,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    backgroundColor: "#3A0B10",
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    alignItems: "center",
+  },
+  scoreLabel: {
+    color: COLORS.textMuted,
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+  },
+  scoreValue: {
+    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  popcornStage: {
+    height: 168,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#3A1A20",
+    backgroundColor: "#100D12",
+    overflow: "hidden",
+    position: "relative",
+  },
+  popcornBowl: {
+    position: "absolute",
+    bottom: -4,
+    left: "39%",
+    fontSize: 64,
+  },
+  popcornPiece: {
+    position: "absolute",
+    width: 40,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "transparent",
+    shadowColor: "#FFFFFF",
+    shadowOpacity: 0.28,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  trapPiece: {
+    width: 32,
+    height: 40,
+    borderRadius: 16,
+    shadowOpacity: 0.08,
+  },
+  poppedKernel: {
+    width: 38,
+    height: 34,
+    position: "relative",
+  },
+  popcornBlob: {
+    position: "absolute",
+    backgroundColor: "#FFFDF2",
+    borderColor: "#E8E2D2",
+    borderWidth: 1,
+    shadowColor: "#FFFFFF",
+    shadowOpacity: 0.28,
+    shadowRadius: 3,
+  },
+  popcornBlobTop: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    top: 0,
+    left: 10,
+  },
+  popcornBlobLeft: {
+    width: 18,
+    height: 20,
+    borderRadius: 10,
+    top: 10,
+    left: 0,
+  },
+  popcornBlobRight: {
+    width: 19,
+    height: 21,
+    borderRadius: 10,
+    top: 9,
+    right: 0,
+  },
+  popcornBlobBottom: {
+    width: 18,
+    height: 17,
+    borderRadius: 9,
+    bottom: 0,
+    left: 10,
+  },
+  popcornBlobCenter: {
+    width: 19,
+    height: 20,
+    borderRadius: 10,
+    top: 8,
+    left: 9,
+    backgroundColor: "#F7F2E5",
+  },
+  cornKernel: {
+    width: 23,
+    height: 34,
+    borderRadius: 14,
+    backgroundColor: "#E9B72E",
+    borderColor: "#B47A13",
+    borderWidth: 1,
+    overflow: "hidden",
+    position: "relative",
+  },
+  cornKernelHighlight: {
+    position: "absolute",
+    width: 8,
+    height: 20,
+    borderRadius: 6,
+    backgroundColor: "rgba(255,255,255,0.28)",
+    top: 6,
+    left: 8,
+    transform: [{ rotate: "12deg" }],
+  },
+  cornKernelTip: {
+    position: "absolute",
+    width: 7,
+    height: 5,
+    borderRadius: 4,
+    backgroundColor: "#8A5A12",
+    bottom: -1,
+    left: 8,
+  },
+  loadingFeedback: {
+    color: COLORS.textMuted,
+    fontSize: 13,
+    fontWeight: "700",
+    textAlign: "center",
   },
   error: {
     color: COLORS.error,
