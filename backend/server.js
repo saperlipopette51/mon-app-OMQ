@@ -59,6 +59,73 @@ const TV_GENRE_FALLBACK_MAP = {
   10402: "35|18",
 };
 
+const REQUESTED_TV_GENRE_SIGNAL_KEYWORDS = {
+  27: [
+    "horror",
+    "horrifique",
+    "horreur",
+    "terror",
+    "terreur",
+    "fright",
+    "fear",
+    "peur",
+    "ghost",
+    "fantome",
+    "haunted",
+    "monstre",
+    "monster",
+    "zombie",
+    "vampire",
+    "demon",
+    "slasher",
+  ],
+  53: [
+    "thriller",
+    "suspense",
+    "tension",
+    "mystery",
+    "mystere",
+    "enquete",
+    "investigation",
+    "conspiracy",
+    "complot",
+    "serial killer",
+    "kidnapping",
+    "traque",
+  ],
+  10402: [
+    "music",
+    "musique",
+    "musical",
+    "song",
+    "chanson",
+    "singer",
+    "chanteur",
+    "band",
+    "groupe",
+    "concert",
+    "rap",
+    "rock",
+    "jazz",
+    "opera",
+    "danse",
+    "dance",
+  ],
+  10749: [
+    "romance",
+    "romantic",
+    "love",
+    "lovers",
+    "relationship",
+    "couple",
+    "amour",
+    "amoureux",
+    "romantique",
+    "relation",
+    "sentimental",
+  ],
+};
+
 const PLATFORM_WATCH_PROVIDER = {
   netflix: "8",
   "prime-video": "119",
@@ -591,11 +658,32 @@ function formatTmdbMovie(movie, context = {}) {
   };
 }
 
+function tvShowSupportsRequestedGenre(show, requestedGenreId) {
+  const id = Number(requestedGenreId || 0);
+  if (!id) return false;
+
+  const genreIds = Array.isArray(show?.genre_ids) ? show.genre_ids.map(Number) : [];
+  if (genreIds.includes(id)) return true;
+
+  const signalKeywords = REQUESTED_TV_GENRE_SIGNAL_KEYWORDS[id];
+  if (!signalKeywords) return true;
+
+  // Some movie genres are mapped to broader TV genres. Keep it flexible, but avoid obvious false matches.
+  const text = normalizeTitleKey(
+    `${show?.name || ""} ${show?.original_name || ""} ${show?.overview || ""}`
+  );
+  return signalKeywords.some((keyword) => text.includes(keyword));
+}
+
 function formatTmdbTv(show, context = {}) {
   if (!show) return null;
   const requestedGenreId = Number(context.requestedGenreId || 0);
   const genreIds = Array.isArray(show.genre_ids) ? [...show.genre_ids] : [];
-  if (requestedGenreId > 0 && !genreIds.includes(requestedGenreId)) {
+  if (
+    requestedGenreId > 0 &&
+    !genreIds.includes(requestedGenreId) &&
+    tvShowSupportsRequestedGenre(show, requestedGenreId)
+  ) {
     genreIds.unshift(requestedGenreId);
   }
   const genres = genreIds.map((id) => GENRE_NAMES[id]).filter(Boolean);
