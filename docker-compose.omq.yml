@@ -1,0 +1,28 @@
+services:
+  omq-web:
+    image: node:22-alpine
+    container_name: omq-web
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "npm install --omit=dev && node server.js"
+    environment:
+      PORT: "3000"
+    volumes:
+      - ./backend:/app
+    networks:
+      - n8n_default
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.omq.rule=Host(`omqonmatequoi.fr`) || Host(`www.omqonmatequoi.fr`)"
+      - "traefik.http.routers.omq.entrypoints=websecure"
+      - "traefik.http.routers.omq.tls=true"
+      - "traefik.http.routers.omq.tls.certresolver=mytlschallenge"
+      - "traefik.http.routers.omq-http.rule=Host(`omqonmatequoi.fr`) || Host(`www.omqonmatequoi.fr`)"
+      - "traefik.http.routers.omq-http.entrypoints=web"
+      - "traefik.http.routers.omq-http.middlewares=omq-https"
+      - "traefik.http.middlewares.omq-https.redirectscheme.scheme=https"
+      - "traefik.http.services.omq.loadbalancer.server.port=3000"
+
+networks:
+  n8n_default:
+    external: true
