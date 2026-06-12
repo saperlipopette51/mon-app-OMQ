@@ -1,12 +1,41 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const path = require("path");
 
 console.log("[BOOT] server.js is executing");
+dotenv.config({ path: path.join(__dirname, ".env") });
 dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+const PUBLIC_DIR = path.join(__dirname, "public");
+const PUBLIC_ASSETS_DIR = path.join(PUBLIC_DIR, "assets");
+const FRONTEND_RECOMMENDATION_ENGINE = path.join(
+  __dirname,
+  "..",
+  "frontend",
+  "src",
+  "recommendations",
+  "engine.js"
+);
+
+app.use(
+  "/assets",
+  express.static(PUBLIC_ASSETS_DIR, {
+    maxAge: "7d",
+  })
+);
+
+app.use(
+  express.static(PUBLIC_DIR, {
+    index: false,
+    maxAge: 0,
+    setHeaders: (res) => {
+      res.setHeader("Cache-Control", "no-store");
+    },
+  })
+);
 
 const TMDB_API_KEY = String(
   process.env.TMDB_API_KEY || process.env.EXPO_PUBLIC_TMDB_API_KEY || ""
@@ -144,6 +173,7 @@ const PLATFORM_LABELS = {
 
 const EUROPE_ORIGIN_COUNTRIES = [
   "FR",
+  "GB",
   "DE",
   "IT",
   "ES",
@@ -155,14 +185,17 @@ const EUROPE_ORIGIN_COUNTRIES = [
   "FI",
   "PL",
   "IE",
+  "PT",
+  "AT",
+  "CH",
 ];
 
-const ASIA_ORIGIN_COUNTRIES = ["KR", "JP", "CN", "HK", "TW"];
+const ASIA_ORIGIN_COUNTRIES = ["KR", "JP", "CN", "HK", "TW", "IN", "TH", "ID", "PH", "VN", "MY", "SG"];
 
 const ORIGIN_LANGUAGE_HINTS = {
   us: ["en"],
-  asie: ["ko", "ja", "zh"],
-  coree: ["ko", "ja", "zh"],
+  asie: ["ko", "ja", "zh", "hi", "ta", "te", "th", "id", "vi", "ms"],
+  coree: ["ko", "ja", "zh", "hi", "ta", "te", "th", "id", "vi", "ms"],
   europe: ["fr", "de", "it", "es", "sv", "da", "no", "fi", "nl", "pl"],
 };
 
@@ -319,6 +352,7 @@ function buildCacheKey({
   contentType,
   origin,
   excludeIds = [],
+  animationCap = "all",
 }) {
   return JSON.stringify({
     page,
@@ -330,6 +364,7 @@ function buildCacheKey({
     contentType: contentType || "",
     origin: origin || "",
     excludeIds: Array.isArray(excludeIds) ? excludeIds.sort() : [],
+    animationCap,
   });
 }
 
@@ -491,6 +526,15 @@ function normalizeGenreIds(value) {
         .filter(Boolean)
     ),
   ];
+}
+
+function normalizeAnimationCap(value, fallback = Infinity) {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (["all", "infinity", "inf", "unlimited"].includes(raw)) return Infinity;
+  const numeric = Number(raw);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.floor(numeric));
 }
 
 function resolveWithGenresParam(genreId, mediaType) {
@@ -736,6 +780,89 @@ function normalizeTitleKey(value) {
     .trim();
 }
 
+function scorePosterSearchResult(item, { title, year }) {
+  const expectedTitle = normalizeTitleKey(title);
+  const candidateTitle = normalizeTitleKey(
+    item?.title || item?.name || item?.original_title || item?.original_name
+  );
+  let score = 0;
+  if (candidateTitle === expectedTitle) score += 80;
+  else if (candidateTitle.includes(expectedTitle) || expectedTitle.includes(candidateTitle)) {
+    score += 35;
+  }
+  if (item?.poster_path) score += 30;
+  const candidateYear = normalizeYear(item?.release_date || item?.first_air_date);
+  const expectedYear = normalizeYear(year);
+  if (expectedYear && candidateYear) {
+    const delta = Math.abs(candidateYear - expectedYear);
+    if (delta === 0) score += 25;
+    else if (delta <= 1) score += 10;
+    else if (delta > 5) score -= 15;
+  }
+  score += Math.min(20, Number(item?.popularity || 0) / 5);
+  return score;
+}
+
+async function fetchTmdbPosterByTitle({ title, type = "", year = "", language = "fr-FR" }) {
+  const cleanTitle = String(title || "").trim();
+  if (!cleanTitle || !hasTmdbCredentials()) return null;
+
+  const normalizedType = normalizeContentType(type);
+  const endpoints =
+    normalizedType === "serie"
+      ? ["tv", "movie"]
+      : normalizedType === "film"
+      ? ["movie", "tv"]
+      : ["movie", "tv"];
+
+  for (const endpoint of endpoints) {
+    const url = new URL(`${TMDB_BASE_URL}/search/${endpoint}`);
+    if (TMDB_API_KEY) {
+      url.searchParams.set("api_key", TMDB_API_KEY);
+    }
+    url.searchParams.set("language", language || "fr-FR");
+    url.searchParams.set("query", cleanTitle);
+    url.searchParams.set("include_adult", "false");
+    const normalizedYear = normalizeYear(year);
+    if (normalizedYear) {
+      if (endpoint === "movie") {
+        url.searchParams.set("year", String(normalizedYear));
+      } else {
+        url.searchParams.set("first_air_date_year", String(normalizedYear));
+      }
+    }
+
+    try {
+      const payload = await fetchTmdbJson(url.toString(), 7000, 1);
+      const results = Array.isArray(payload?.results) ? payload.results : [];
+      const best = results
+        .filter((item) => item?.poster_path)
+        .sort(
+          (left, right) =>
+            scorePosterSearchResult(right, { title: cleanTitle, year }) -
+            scorePosterSearchResult(left, { title: cleanTitle, year })
+        )[0];
+      if (best?.poster_path) {
+        return {
+          poster_path: best.poster_path,
+          poster_url: `https://image.tmdb.org/t/p/w500${best.poster_path}`,
+          tmdb_id: best.id,
+          title: best.title || best.name || cleanTitle,
+          year: normalizeYear(best.release_date || best.first_air_date) || "",
+        };
+      }
+    } catch (error) {
+      console.log("[TMDB] poster search failed", {
+        title: cleanTitle,
+        endpoint,
+        message: String(error?.message || error),
+      });
+    }
+  }
+
+  return null;
+}
+
 function mergeStringLists(...lists) {
   const output = [];
   const seen = new Set();
@@ -838,7 +965,7 @@ function selectedAgeBucket(ageRestriction) {
 function certificationBucket(certification) {
   const cert = normalizeCertification(certification);
   if (!cert) return null;
-  if (["G", "PG", "TV-G", "TV-PG"].includes(cert)) return 0;
+  if (["ALL", "TOUT PUBLIC", "G", "PG", "TV-G", "TV-PG"].includes(cert)) return 0;
   if (["PG-13", "TV-14", "12", "12+"].includes(cert)) return 12;
   if (["R", "TV-MA", "16", "16+"].includes(cert)) return 16;
   if (["NC-17", "18", "18+"].includes(cert)) return 18;
@@ -866,6 +993,11 @@ function filmAgeScore(ageRestriction, film) {
   // "Tout public" must not include unknown age ratings, because unknown can hide 12+/16+/18+.
   if (bucket === null) return selected === 0 ? 0 : 8;
   return bucket <= selected ? 15 : 0;
+}
+
+function isFamilySafeFilm(film) {
+  if (Boolean(film?.adult)) return false;
+  return certificationBucket(film?.certification || film?.age_restriction) === 0;
 }
 
 function filmMatchesGenre(film, genre) {
@@ -916,19 +1048,56 @@ function filmMatchesPlatform(film, platform) {
   return aliases.some((alias) => alias && source.includes(alias));
 }
 
+function normalizeYear(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const text = String(value || "");
+  if (/^\d{4}$/.test(text)) return Number(text);
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return Number(text.slice(0, 4));
+  return null;
+}
+
 function qualityTieBreaker(film) {
   const voteAverage = Number(film?.vote_average || 0);
   const popularity = Number(film?.popularity || 0);
+  const voteCount = Number(film?.vote_count || 0);
+  const year = normalizeYear(film?.year) || normalizeYear(film?.release_date);
+  const currentYear = new Date().getFullYear();
+  const age = year ? Math.max(0, currentYear - year) : null;
   const rating = Number.isFinite(voteAverage)
     ? Math.max(0, Math.min(10, voteAverage)) / 10
     : 0;
   const pop = Number.isFinite(popularity)
     ? Math.max(0, Math.min(1, Math.log1p(popularity) / Math.log1p(350)))
     : 0;
-  return rating * 3 + pop * 2;
+  const votes = Number.isFinite(voteCount)
+    ? Math.max(0, Math.min(1, Math.log1p(voteCount) / Math.log1p(15000)))
+    : 0;
+  const recency =
+    age === null
+      ? 0.35
+      : age <= 1
+      ? 1
+      : age <= 3
+      ? 0.85
+      : age <= 6
+      ? 0.65
+      : age <= 10
+      ? 0.45
+      : age <= 20
+      ? 0.25
+      : 0.1;
+  return rating * 2.4 + pop * 1.8 + recency * 1.2 + votes * 0.6;
 }
 
-function scoreFilmForBackend(film, { genre, genres, contentType, ageRestriction, origin, platform }) {
+function scoreFilmForBackend(film, {
+  genre,
+  genres,
+  contentType,
+  ageRestriction,
+  origin,
+  platform,
+  animationCap = Infinity,
+}) {
   const requestedGenres = normalizeGenreIds(genres);
   const activeGenres = requestedGenres.length
     ? requestedGenres
@@ -936,15 +1105,15 @@ function scoreFilmForBackend(film, { genre, genres, contentType, ageRestriction,
     ? [normalizeGenreId(genre)]
     : [];
   if (!filmMatchesAnyGenre(film, activeGenres)) return null;
+  if (activeGenres.includes("10751") && !isFamilySafeFilm(film)) return null;
   if (!filmMatchesType(film, contentType)) return null;
   const normalizedOrigin = normalizeOrigin(origin);
   if (normalizedOrigin && !filmMatchesOrigin(film, normalizedOrigin)) return null;
   const normalizedAgeRestriction = normalizeAgeRestriction(ageRestriction);
   const normalizedPlatform = normalizePlatform(platform);
+  const familyWithoutAnimation = activeGenres.includes("10751") && !activeGenres.includes("16");
   const animationBlocked =
-    !requestedFamilyOrAnimation(activeGenres) &&
-    normalizedPlatform !== "disney-plus" &&
-    isFamilyOrAnimationFilm(film);
+    (animationCap <= 0 || familyWithoutAnimation) && isFamilyOrAnimationFilm(film);
   if (animationBlocked) return null;
 
   const genreScore = activeGenres.length ? 40 : 40;
@@ -981,10 +1150,6 @@ function isFamilyOrAnimationFilm(film) {
     genreText.includes("anime") ||
     genreText.includes("manga")
   );
-}
-
-function requestedFamilyOrAnimation(genres = []) {
-  return normalizeGenreIds(genres).some((genreId) => genreId === "16");
 }
 
 function diversifyRankedFilms(rankedFilms, limit = 90, options = {}) {
@@ -1033,6 +1198,7 @@ async function fetchTmdbFilms({
   genre = "",
   contentType = "",
   origin = "",
+  animationCap = Infinity,
 }) {
   const normalizedPlatform = normalizePlatform(platform);
   const normalizedAgeRestriction = normalizeAgeRestriction(ageRestriction);
@@ -1268,6 +1434,7 @@ async function fetchTmdbFilmsWide({
   contentType = "",
   origin = "",
   excludeIds = [],
+  animationCap = Infinity,
 }) {
   const normalizedPlatform = normalizePlatform(platform);
   const normalizedAgeRestriction = normalizeAgeRestriction(ageRestriction);
@@ -1372,16 +1539,14 @@ async function fetchTmdbFilmsWide({
         ageRestriction: normalizedAgeRestriction,
         origin: normalizedOrigin,
         platform: normalizedPlatform,
+        animationCap,
       })
     )
     .filter(Boolean)
     .sort((a, b) => Number(b.backend_rank_score || 0) - Number(a.backend_rank_score || 0));
 
   const familyAnimationCap =
-    !requestedFamilyOrAnimation(normalizedGenreIds) &&
-    normalizedPlatform !== "disney-plus"
-      ? 0
-      : Infinity;
+    Number.isFinite(animationCap) ? animationCap : Infinity;
   const diversified = diversifyRankedFilms(scored, 120, { familyAnimationCap });
   const notice =
     scored.length < 5
@@ -1399,7 +1564,119 @@ async function fetchTmdbFilmsWide({
 }
 
 app.get("/", (_req, res) => {
-  res.status(200).json({ message: "API OK" });
+  res.status(200).sendFile(path.join(PUBLIC_DIR, "index.html"));
+});
+
+app.get("/recommendations-engine.js", (_req, res) => {
+  res.type("application/javascript").sendFile(FRONTEND_RECOMMENDATION_ENGINE);
+});
+
+app.get(["/privacy", "/privacy-policy"], (_req, res) => {
+  res
+    .status(200)
+    .type("html")
+    .send(`<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Politique de confidentialite - OMQ</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #181818;
+        background: #ffffff;
+        line-height: 1.6;
+      }
+      main {
+        width: min(920px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 40px 0 64px;
+      }
+      h1 {
+        font-size: 32px;
+        line-height: 1.2;
+        margin: 0 0 8px;
+      }
+      h2 {
+        font-size: 20px;
+        margin: 32px 0 8px;
+      }
+      p,
+      li {
+        font-size: 16px;
+      }
+      .muted {
+        color: #666666;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Politique de confidentialite</h1>
+      <p class="muted">Application OMQ: On mate quoi ? - Derniere mise a jour : 11 juin 2026</p>
+
+      <h2>1. Objet de l'application</h2>
+      <p>
+        OMQ aide les utilisateurs a trouver des idees de films et de series selon leurs envies,
+        leurs plateformes de streaming, leurs preferences de genres et leurs criteres de selection.
+      </p>
+
+      <h2>2. Donnees collectees</h2>
+      <p>
+        L'application ne demande pas la creation d'un compte et ne collecte pas directement le nom,
+        l'adresse postale, le numero de telephone, les informations de paiement ou les contacts de
+        l'utilisateur.
+      </p>
+      <p>
+        Les choix effectues dans l'application, comme les genres, plateformes, types de contenus ou
+        preferences de recommandation, peuvent etre utilises uniquement pour generer les resultats
+        demandes. Certaines preferences peuvent etre conservees localement sur l'appareil afin
+        d'ameliorer l'experience utilisateur.
+      </p>
+
+      <h2>3. Utilisation du serveur et de services tiers</h2>
+      <p>
+        Pour fournir des recommandations, l'application communique avec le serveur OMQ. Le serveur
+        peut interroger des services tiers, notamment TMDB, afin d'obtenir des informations publiques
+        sur les films et series, comme les titres, affiches, descriptions, notes et plateformes.
+      </p>
+      <p>
+        Comme tout service en ligne, le serveur ou l'hebergeur peut recevoir des donnees techniques
+        necessaires au fonctionnement du service, par exemple l'adresse IP, la date de la requete,
+        le type d'appareil ou des journaux techniques. Ces informations servent a assurer la securite,
+        diagnostiquer les erreurs et maintenir le service.
+      </p>
+
+      <h2>4. Publicite et revente des donnees</h2>
+      <p>
+        OMQ ne vend pas les donnees personnelles des utilisateurs. L'application n'utilise pas ces
+        donnees pour etablir un profil publicitaire nominatif.
+      </p>
+
+      <h2>5. Conservation</h2>
+      <p>
+        Les preferences conservees localement restent sur l'appareil de l'utilisateur et peuvent etre
+        supprimees en desinstallant l'application. Les journaux techniques du serveur, lorsqu'ils
+        existent, sont conserves uniquement pendant la duree necessaire au fonctionnement, a la
+        securite et au diagnostic du service.
+      </p>
+
+      <h2>6. Droits des utilisateurs</h2>
+      <p>
+        L'utilisateur peut demander des informations, une rectification ou une suppression des donnees
+        le concernant lorsque cela s'applique.
+      </p>
+
+      <h2>7. Contact</h2>
+      <p>
+        Pour toute question relative a cette politique de confidentialite, vous pouvez contacter
+        l'editeur de l'application a l'adresse suivante : virginiemal51@gmail.com.
+      </p>
+    </main>
+  </body>
+</html>`);
 });
 
 app.get("/test", (_req, res) => {
@@ -1408,6 +1685,35 @@ app.get("/test", (_req, res) => {
 
 app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
+});
+
+app.get("/poster", async (req, res) => {
+  const title = String(req.query.title || "").trim();
+  const type = normalizeContentType(req.query.type);
+  const year = String(req.query.year || "").trim();
+  const language = String(req.query.language || "fr-FR").trim() || "fr-FR";
+
+  if (!title) {
+    return res.status(400).json({ poster_url: "", error: "missing title" });
+  }
+
+  if (!hasTmdbCredentials()) {
+    return res.status(200).json({ poster_url: "", poster_path: "", source: "missing-tmdb-credentials" });
+  }
+
+  try {
+    const poster = await fetchTmdbPosterByTitle({ title, type, year, language });
+    return res.status(200).json(
+      poster || {
+        poster_url: "",
+        poster_path: "",
+        source: "not-found",
+      }
+    );
+  } catch (error) {
+    console.error("[TMDB] /poster error:", error?.message || error);
+    return res.status(200).json({ poster_url: "", poster_path: "", source: "error" });
+  }
 });
 
 app.get("/films", async (req, res) => {
@@ -1424,6 +1730,7 @@ app.get("/films", async (req, res) => {
   const contentType = normalizeContentType(req.query.contentType);
   const origin = normalizeOrigin(req.query.origin);
   const excludeIds = normalizeExcludeIds(req.query.excludeIds);
+  const animationCap = normalizeAnimationCap(req.query.animationCap);
   const fallbackCatalog = contentType === "serie" ? DEFAULT_SERIES : DEFAULT_FILMS;
   const cacheKey = buildCacheKey({
     page,
@@ -1435,6 +1742,7 @@ app.get("/films", async (req, res) => {
     contentType,
     origin,
     excludeIds,
+    animationCap: Number.isFinite(animationCap) ? animationCap : "all",
   });
   const cachedFilms = getCachedFilms(cacheKey);
 
@@ -1449,6 +1757,7 @@ app.get("/films", async (req, res) => {
       contentType: contentType || "none",
       origin: origin || "none",
       excluded: excludeIds.length,
+      animationCap: Number.isFinite(animationCap) ? animationCap : "all",
       count: cachedFilms.length,
     });
     return res.status(200).json(cachedFilms);
@@ -1464,6 +1773,7 @@ app.get("/films", async (req, res) => {
     contentType: contentType || "none",
     origin: origin || "none",
     excluded: excludeIds.length,
+    animationCap: Number.isFinite(animationCap) ? animationCap : "all",
   });
 
   if (!hasTmdbCredentials()) {
@@ -1484,6 +1794,7 @@ app.get("/films", async (req, res) => {
       contentType,
       origin,
       excludeIds,
+      animationCap,
     });
     const films = Array.isArray(result?.films) ? result.films : [];
     const notice = String(result?.notice || "").trim();
