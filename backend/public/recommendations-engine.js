@@ -96,8 +96,12 @@ const ORIGIN_HINTS = {
     "it",
     "es",
     "ie",
-    "be",
+    "gb",
+    "uk",
+    "pt",
+    "at",
     "ch",
+    "be",
     "sv",
     "da",
     "no",
@@ -1022,6 +1026,16 @@ function itemMatchesSingleOrigin(item, origin = "") {
   return originMatches(requestedOrigin, film) === true;
 }
 
+function itemMatchesAnyOriginTarget(item, originTargets = []) {
+  const targets = uniqueStrings(
+    (Array.isArray(originTargets) ? originTargets : [])
+      .map((origin) => normalizeText(origin))
+      .filter((origin) => origin && origin !== "peu-importe")
+  );
+  if (!targets.length) return true;
+  return targets.some((origin) => itemMatchesSingleOrigin(item, origin));
+}
+
 function itemYear(item) {
   const film = item?.film || item?.raw || item || {};
   return normalizeYear(film.year) || normalizeYear(film.release_date) || 0;
@@ -1298,6 +1312,12 @@ export function buildRecommendations({
     if (avoided.has(normalizeText(item.film.title))) return false;
     return true;
   });
+  const originRestrictionActive =
+    requestedOriginTargets.length > 0 &&
+    unique.some((item) => itemMatchesAnyOriginTarget(item, requestedOriginTargets));
+  if (originRestrictionActive) {
+    unique = unique.filter((item) => itemMatchesAnyOriginTarget(item, requestedOriginTargets));
+  }
 
   const hasGenreTarget = Boolean(
     strictTargets.genre || users.some((user) => Boolean(user.genre))
@@ -1347,7 +1367,14 @@ export function buildRecommendations({
         if (!itemMatchesGenreTargets(film, requestedGenreTargets)) {
           return null;
         }
-        return buildFallbackScoredItem({ film, strictTargets, globalAnswers });
+        const fallbackItem = buildFallbackScoredItem({ film, strictTargets, globalAnswers });
+        if (
+          originRestrictionActive &&
+          !itemMatchesAnyOriginTarget(fallbackItem, requestedOriginTargets)
+        ) {
+          return null;
+        }
+        return fallbackItem;
       })
       .filter(Boolean);
 
@@ -1365,7 +1392,8 @@ export function buildRecommendations({
           !shouldBlockAnimation({ animationCap, film }) &&
           !shouldBlockFamilyUnsafe({ genreTargets: requestedGenreTargets, film }) &&
           itemMatchesContentType(film, strictTargets.contentType) &&
-          itemMatchesGenreTargets(film, requestedGenreTargets)
+          itemMatchesGenreTargets(film, requestedGenreTargets) &&
+          (!originRestrictionActive || itemMatchesAnyOriginTarget(film, requestedOriginTargets))
       )
       .map((film) => buildFallbackScoredItem({ film, strictTargets, globalAnswers }))
       .filter(Boolean);
@@ -1395,6 +1423,7 @@ export function buildRecommendations({
     return diverse
       .filter((item) => itemMatchesGenreTargets(item, requestedGenreTargets))
       .filter((item) => itemMatchesContentType(item, strictTargets.contentType))
+      .filter((item) => !originRestrictionActive || itemMatchesAnyOriginTarget(item, requestedOriginTargets))
       .slice(0, max)
       .map(enrichItem);
   }
@@ -1404,6 +1433,7 @@ export function buildRecommendations({
     if (diverse.some((candidate) => candidate.key === item.key)) return false;
     if (!itemMatchesGenreTargets(item, requestedGenreTargets)) return false;
     if (!itemMatchesContentType(item, strictTargets.contentType)) return false;
+    if (originRestrictionActive && !itemMatchesAnyOriginTarget(item, requestedOriginTargets)) return false;
     if (!Number.isFinite(animationCap) || !itemLooksAnimated(item)) return true;
     if (fallbackAnimationCount >= animationCap) return false;
     fallbackAnimationCount += 1;
@@ -1416,7 +1446,8 @@ export function buildRecommendations({
       (item) =>
         !finalItems.some((candidate) => candidate.key === item.key) &&
         itemMatchesContentType(item, strictTargets.contentType) &&
-        itemMatchesGenreTargets(item, requestedGenreTargets)
+        itemMatchesGenreTargets(item, requestedGenreTargets) &&
+        (!originRestrictionActive || itemMatchesAnyOriginTarget(item, requestedOriginTargets))
     );
     finalItems = [...finalItems, ...relaxedFallback].slice(0, max);
   }
@@ -1445,7 +1476,14 @@ export function buildRecommendations({
         if (!itemMatchesGenreTargets(film, requestedGenreTargets)) {
           return null;
         }
-        return buildFallbackScoredItem({ film, strictTargets, globalAnswers });
+        const fallbackItem = buildFallbackScoredItem({ film, strictTargets, globalAnswers });
+        if (
+          originRestrictionActive &&
+          !itemMatchesAnyOriginTarget(fallbackItem, requestedOriginTargets)
+        ) {
+          return null;
+        }
+        return fallbackItem;
       })
       .filter(Boolean);
 
@@ -1463,6 +1501,7 @@ export function buildRecommendations({
   return finalItems
     .filter((item) => itemMatchesGenreTargets(item, requestedGenreTargets))
     .filter((item) => itemMatchesContentType(item, strictTargets.contentType))
+    .filter((item) => !originRestrictionActive || itemMatchesAnyOriginTarget(item, requestedOriginTargets))
     .map(enrichItem);
 }
 

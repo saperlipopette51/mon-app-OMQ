@@ -3081,7 +3081,7 @@ function aggregateQuery() {
     ageRestriction: state.global.ageRestriction,
     genres: genres.join(","),
     contentType: contentTypes.length === 1 ? contentTypes[0] : "",
-    origin: origins.length === 1 && origins.length === state.users.length ? origins[0] : "",
+    origin: origins.length === 1 ? origins[0] : "",
     animationCap: animationRequests === 0 ? "0" : animationRequests === state.users.length ? "all" : "1",
   };
 }
@@ -3383,12 +3383,18 @@ function buildWebFallbackItems() {
 
   const allowedFallbacks = WEB_FALLBACK_ITEMS.filter(itemAllowedByAnimationChoice);
   const strict = allowedFallbacks.filter((item) => itemMatchesPreferences(item));
-  const rescueTiers = [
-    { allowGenreRelax: true },
-    { allowOriginRelax: true },
-    { allowGenreRelax: true, allowOriginRelax: true },
-    { allowGenreRelax: true, allowOriginRelax: true, allowTypeRelax: true },
-  ];
+  const hasRequestedOrigin = Boolean(aggregateQuery().origin);
+  const rescueTiers = hasRequestedOrigin
+    ? [
+        { allowGenreRelax: true },
+        { allowGenreRelax: true, allowTypeRelax: true },
+      ]
+    : [
+        { allowGenreRelax: true },
+        { allowOriginRelax: true },
+        { allowGenreRelax: true, allowOriginRelax: true },
+        { allowGenreRelax: true, allowOriginRelax: true, allowTypeRelax: true },
+      ];
   const close = [];
 
   for (const tier of rescueTiers) {
