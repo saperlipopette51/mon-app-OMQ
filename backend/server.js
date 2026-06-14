@@ -37,10 +37,21 @@ app.use(
   })
 );
 
-const TMDB_API_KEY = String(
-  process.env.TMDB_API_KEY || process.env.EXPO_PUBLIC_TMDB_API_KEY || ""
-).trim();
-const TMDB_BEARER_TOKEN = String(process.env.TMDB_BEARER_TOKEN || "").trim();
+function readEnvValue(...keys) {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+const TMDB_API_KEY = readEnvValue(
+  "TMDB_API_KEY",
+  "tmdb_api_key",
+  "EXPO_PUBLIC_TMDB_API_KEY",
+  "expo_public_tmdb_api_key"
+);
+const TMDB_BEARER_TOKEN = readEnvValue("TMDB_BEARER_TOKEN", "tmdb_bearer_token");
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 const FILMS_CACHE_TTL_MS = Number(process.env.FILMS_CACHE_TTL_MS || 10 * 60 * 1000);
 const FILMS_CACHE_MAX_ENTRIES = Number(process.env.FILMS_CACHE_MAX_ENTRIES || 150);
