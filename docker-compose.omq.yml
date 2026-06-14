@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     working_dir: /app
     command: sh -c "npm install --omit=dev && node server.js"
+    env_file:
+      - ./backend/.env
     environment:
       PORT: "3000"
     volumes:
