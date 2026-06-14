@@ -30,8 +30,66 @@ const GENRE_BY_ID = {
 
 const ORIGIN_HINTS = {
   us: ["en", "us", "usa", "american", "hollywood"],
-  asie: ["ko", "ja", "zh", "cn", "jp", "kr", "hk", "tw", "korea", "coree", "japan", "china"],
-  coree: ["ko", "ja", "zh", "cn", "jp", "kr", "hk", "tw", "korea", "coree", "japan", "china"],
+  asie: [
+    "ko",
+    "ja",
+    "zh",
+    "hi",
+    "ta",
+    "te",
+    "th",
+    "id",
+    "vi",
+    "ms",
+    "cn",
+    "jp",
+    "kr",
+    "hk",
+    "tw",
+    "in",
+    "thailand",
+    "indonesia",
+    "vietnam",
+    "malaysia",
+    "singapore",
+    "philippines",
+    "korea",
+    "coree",
+    "japan",
+    "china",
+    "india",
+    "inde",
+  ],
+  coree: [
+    "ko",
+    "ja",
+    "zh",
+    "hi",
+    "ta",
+    "te",
+    "th",
+    "id",
+    "vi",
+    "ms",
+    "cn",
+    "jp",
+    "kr",
+    "hk",
+    "tw",
+    "in",
+    "thailand",
+    "indonesia",
+    "vietnam",
+    "malaysia",
+    "singapore",
+    "philippines",
+    "korea",
+    "coree",
+    "japan",
+    "china",
+    "india",
+    "inde",
+  ],
   europe: [
     "fr",
     "de",
@@ -269,6 +327,7 @@ function buildFallbackScoredItem({ film, strictTargets, globalAnswers }) {
   const originMatch = originRequested ? originMatches(strictTargets.origin, film) : null;
   const platformInfo = platformMatchInfo(globalAnswers.platform, film);
   const genreTargets = uniqueStrings([strictTargets.genre]);
+  if (shouldBlockFamilyUnsafe({ genreTargets, film })) return null;
   const overloadPenalty = familyAnimationOverloadPenalty({
     selectedAge: globalAnswers.ageRestriction,
     film,
@@ -323,12 +382,24 @@ function parseAgeBucket(value) {
   return null;
 }
 
+function isFamilySafeFilm(film) {
+  if (Boolean(film?.adult)) return false;
+  const bucket = getFilmAgeBucket(film);
+  return bucket === 0;
+}
+
 function parseSelectedAgeBucket(value) {
   const text = normalizeText(value);
   if (!text) return null;
   // "Tout public" means no age restriction: not 12+, not 16+, not 18+.
   if (text === "all" || text.includes("tout public")) return 0;
   return parseAgeBucket(value);
+}
+
+function getFilmAgeBucket(film) {
+  const numericBucket = Number(film?.age_bucket);
+  if (Number.isFinite(numericBucket)) return numericBucket;
+  return parseAgeBucket(film?.age_restriction || film?.certification || film?.age || "");
 }
 
 function isMatureAgeRequest(value) {
@@ -369,38 +440,48 @@ function looksAnimated(film) {
   );
 }
 
-function wantsFamilyOrAnimation(genreTargets = []) {
-  return genreTargets.some((genre) => genre === "animation" || genre === "family");
-}
-
 function wantsAnimation(genreTargets = []) {
   return genreTargets.some((genre) => genre === "animation");
 }
 
-function disneyIsRequested(globalAnswers = {}) {
-  const platforms = Array.isArray(globalAnswers.platforms)
-    ? globalAnswers.platforms
-    : [globalAnswers.platform];
-  return platforms.map((platform) => normalizeText(platform)).some((platform) => {
-    const aliases = PLATFORM_ALIASES[platform] || [platform];
-    return platform === "disney-plus" || aliases.some((alias) => normalizeText(alias).includes("disney"));
-  });
+function wantsFamily(genreTargets = []) {
+  return genreTargets.some((genre) => genre === "family");
 }
 
-function shouldBlockAnimation({ globalAnswers, genreTargets, film }) {
-  return (
-    !wantsAnimation(genreTargets) &&
-    !disneyIsRequested(globalAnswers) &&
-    looksAnimated(film)
-  );
+function animationPreferenceForGroup(users = [], strictTargets = {}) {
+  const safeUsers = Array.isArray(users) ? users : [];
+  const participantCount = Math.max(1, safeUsers.length || 1);
+  const animationRequests = safeUsers.filter((user) => user?.genre === "animation").length;
+  const fallbackAnimationRequest =
+    !safeUsers.length && strictTargets?.genre === "animation" ? 1 : 0;
+  const requestedCount = animationRequests || fallbackAnimationRequest;
+
+  if (requestedCount <= 0) {
+    return { requestedCount: 0, participantCount, cap: 0, everyone: false };
+  }
+
+  const everyone = requestedCount >= participantCount;
+  return {
+    requestedCount,
+    participantCount,
+    cap: everyone ? Infinity : 1,
+    everyone,
+  };
+}
+
+function shouldBlockAnimation({ animationCap, film }) {
+  return animationCap <= 0 && looksAnimated(film);
+}
+
+function shouldBlockFamilyUnsafe({ genreTargets, film }) {
+  return wantsFamily(genreTargets) && !isFamilySafeFilm(film);
 }
 
 function familyAnimationOverloadPenalty({ selectedAge, film, filmGenres, genreTargets }) {
   if (!isToutPublicRequest(selectedAge)) return 0;
-  if (wantsFamilyOrAnimation(genreTargets)) return 0;
-  const hasFamilyOrAnimationGenre =
-    filmGenres.includes("animation") || filmGenres.includes("family");
-  return hasFamilyOrAnimationGenre || looksFamilyOrAnimation(film) ? 18 : 0;
+  if (wantsAnimation(genreTargets)) return 0;
+  const hasAnimationGenre = filmGenres.includes("animation");
+  return hasAnimationGenre || looksAnimated(film) ? 18 : 0;
 }
 
 function ageMatches(selectedAge, film) {
@@ -408,9 +489,7 @@ function ageMatches(selectedAge, film) {
   if (selectedBucket === null) return true;
   if (selectedBucket < 18 && Boolean(film.adult)) return false;
 
-  const filmBucket = parseAgeBucket(
-    film.age_restriction || film.certification || film.age || ""
-  );
+  const filmBucket = getFilmAgeBucket(film);
   if (isMatureAgeRequest(selectedAge)) {
     if (filmBucket === null) return !looksFamilyOrAnimation(film);
     return selectedBucket >= 18 ? filmBucket >= 16 : filmBucket === 16;
@@ -471,9 +550,7 @@ function ageMatchInfo(selectedAge, film) {
     return { requested: true, matched: false, known: true, unsafe: true };
   }
 
-  const filmBucket = parseAgeBucket(
-    film.age_restriction || film.certification || film.age || ""
-  );
+  const filmBucket = getFilmAgeBucket(film);
   if (isMatureAgeRequest(selectedAge)) {
     if (filmBucket === null) {
       const unsafe = looksFamilyOrAnimation(film);
@@ -637,13 +714,50 @@ function humanJoin(list) {
 function qualityBonus(film) {
   const voteAverage = Number(film.vote_average || 0);
   const popularity = Number(film.popularity || 0);
+  const voteCount = Number(film.vote_count || 0);
+  const year = normalizeYear(film.year) || normalizeYear(film.release_date);
+  const currentYear = new Date().getFullYear();
+  const age = year ? Math.max(0, currentYear - year) : null;
   const ratingFactor = Number.isFinite(voteAverage)
     ? Math.max(0, Math.min(1, voteAverage / 10))
     : 0;
   const popularityFactor = Number.isFinite(popularity)
     ? Math.max(0, Math.min(1, Math.log1p(popularity) / Math.log1p(350)))
     : 0;
-  return ratingFactor * 0.75 + popularityFactor * 0.25;
+  const voteCountFactor = Number.isFinite(voteCount)
+    ? Math.max(0, Math.min(1, Math.log1p(voteCount) / Math.log1p(15000)))
+    : 0;
+  const recencyFactor =
+    age === null
+      ? 0.35
+      : age <= 1
+      ? 1
+      : age <= 3
+      ? 0.85
+      : age <= 6
+      ? 0.65
+      : age <= 10
+      ? 0.45
+      : age <= 20
+      ? 0.25
+      : 0.1;
+  const discoveryFactor =
+    popularity <= 0
+      ? 0.25
+      : popularity <= 25
+      ? 0.95
+      : popularity <= 90
+      ? 1
+      : popularity <= 180
+      ? 0.65
+      : 0.25;
+  return (
+    ratingFactor * 0.38 +
+    recencyFactor * 0.28 +
+    discoveryFactor * 0.22 +
+    voteCountFactor * 0.08 +
+    popularityFactor * 0.04
+  );
 }
 
 function createWhyLine({ users, globalAnswers, primaryGenre, contentType, matchDetails }) {
@@ -679,15 +793,16 @@ function createWhyLine({ users, globalAnswers, primaryGenre, contentType, matchD
     : "Compromis malin pour le groupe";
 
   if (!details.length) {
-    return `${intro}: proche de vos envies sans forcer un faux match.`;
+    return `${intro}: une proposition proche de vos envies, gardee pour ouvrir une piste sans forcer le match.`;
   }
 
+  const respected = humanJoin(details.slice(0, 4));
   const conclusion =
     matchedUsers >= totalUsers
-      ? "C'est le genre de choix qui peut mettre tout le monde d'accord."
-      : "Il sert de terrain d'entente sans trop trahir les preferences.";
+      ? "Bon potentiel pour mettre le groupe d'accord sans partir trop loin du quiz."
+      : "C'est un compromis propre: il garde l'essentiel et evite le choix trop aleatoire.";
 
-  return `${intro}: il respecte ${humanJoin(details.slice(0, 4))}. ${conclusion}`;
+  return `${intro}: ${respected} est bien pris en compte. ${conclusion}`;
 }
 
 function scoreFilm(film, context) {
@@ -704,6 +819,7 @@ function scoreFilm(film, context) {
     ...usersWithGenre.map((user) => user.genre),
     strictTargets.genre,
   ]);
+  if (shouldBlockFamilyUnsafe({ genreTargets, film })) return null;
   const matchedGenreTokens = genreTargets.filter((genre) => filmGenres.includes(genre));
   const primaryGenre =
     matchedGenreTokens[0] || filmGenres[0] || normalizeGenreToken(film.genre || "");
@@ -712,21 +828,53 @@ function scoreFilm(film, context) {
     : 1;
   const genreMatchedUsers = usersWithGenre.filter((user) => filmGenres.includes(user.genre)).length;
 
-  const requestedType = strictTargets.contentType;
-  const typeRequested = Boolean(requestedType && requestedType !== "peu-importe");
-  const typeMatched = !typeRequested || contentType === requestedType;
+  const usersWithType = users.filter(
+    (user) => Boolean(user.contentType) && user.contentType !== "peu-importe"
+  );
+  const typeTargets = uniqueStrings([
+    ...usersWithType.map((user) => user.contentType),
+    strictTargets.contentType && strictTargets.contentType !== "peu-importe"
+      ? strictTargets.contentType
+      : "",
+  ]);
+  const matchedTypeTokens = typeTargets.filter((type) => contentType === type);
+  const typeRatio = typeTargets.length
+    ? matchedTypeTokens.length / Math.max(1, typeTargets.length)
+    : 1;
+  const typeMatched = !typeTargets.length || matchedTypeTokens.length > 0;
 
-  const requestedOrigin = strictTargets.origin;
-  const originRequested = Boolean(requestedOrigin && requestedOrigin !== "peu-importe");
-  const originMatch = originRequested ? originMatches(requestedOrigin, film) : null;
+  const usersWithOrigin = users.filter(
+    (user) => Boolean(user.origin) && user.origin !== "peu-importe"
+  );
+  const originTargets = uniqueStrings([
+    ...usersWithOrigin.map((user) => user.origin),
+    strictTargets.origin && strictTargets.origin !== "peu-importe"
+      ? strictTargets.origin
+      : "",
+  ]);
+  const originMatchesByTarget = originTargets.map((origin) => originMatches(origin, film));
+  const matchedOriginCount = originMatchesByTarget.filter((match) => match === true).length;
+  const hasUnknownOrigin = originMatchesByTarget.some((match) => match === null);
+  const originRatio = originTargets.length
+    ? matchedOriginCount / Math.max(1, originTargets.length)
+    : 1;
+  const originMatch = originTargets.length
+    ? matchedOriginCount > 0
+      ? true
+      : hasUnknownOrigin
+      ? null
+      : false
+    : null;
 
   const platformInfo = platformMatchInfo(globalAnswers.platform, film);
 
   const scoreParts = {
     genre: genreTargets.length ? Math.round(40 * genreRatio) : 40,
-    type: typeRequested ? (typeMatched ? 20 : 0) : 20,
+    type: typeTargets.length ? Math.round(20 * typeRatio) : 20,
     age: ageInfo.requested ? (ageInfo.known ? 15 : 10) : 15,
-    origin: originRequested ? (originMatch === true ? 15 : originMatch === null ? 7 : 0) : 15,
+    origin: originTargets.length
+      ? Math.round(15 * originRatio) || (hasUnknownOrigin ? 7 : 0)
+      : 15,
     platform: platformInfo.requested
       ? platformInfo.matched
         ? platformInfo.known
@@ -756,14 +904,17 @@ function scoreFilm(film, context) {
 
   const matchDetails = {
     genre: scoreParts.genre > 0,
-    type: scoreParts.type === 20,
+    type: scoreParts.type > 0,
     age: scoreParts.age >= 10,
-    origin: !originRequested || originMatch === true,
+    origin: !originTargets.length || originMatch === true,
     platform: !platformInfo.requested || platformInfo.matched,
     matchedGenreTokens,
     genreMatchedUsers,
     genreRatio,
+    matchedTypeTokens,
+    typeRatio,
     typeMatched,
+    originTargets,
     originMatch,
     platformInfo,
   };
@@ -834,18 +985,6 @@ function dedupeFilmPool(films) {
   return output;
 }
 
-function itemLooksFamilyOrAnimation(item) {
-  const film = item?.film || item?.raw || item || {};
-  const genres = extractGenres(film);
-  return (
-    item?.primaryGenre === "animation" ||
-    item?.primaryGenre === "family" ||
-    genres.includes("animation") ||
-    genres.includes("family") ||
-    looksFamilyOrAnimation(film)
-  );
-}
-
 function itemLooksAnimated(item) {
   const film = item?.film || item?.raw || item || {};
   const genres = extractGenres(film);
@@ -859,11 +998,51 @@ function itemMatchesGenreTargets(item, genreTargets = []) {
   return genreTargets.some((genre) => genres.includes(genre));
 }
 
+function itemMatchesSingleGenre(item, genreTarget = "") {
+  const target = normalizeGenreToken(genreTarget);
+  if (!target) return false;
+  const film = item?.film || item?.raw || item || {};
+  const genres = extractGenres(film);
+  return genres.includes(target);
+}
+
+function itemCanRepresentGenreTarget(item, genreTarget = "") {
+  const target = normalizeGenreToken(genreTarget);
+  if (!target || !itemMatchesSingleGenre(item, target)) return false;
+  if (target !== "family") return true;
+  const film = item?.film || item?.raw || item || {};
+  return !itemLooksAnimated(item) && isFamilySafeFilm(film);
+}
+
 function itemMatchesContentType(item, contentType = "") {
   const requestedType = normalizeText(contentType);
   if (!requestedType || requestedType === "peu-importe") return true;
   const film = item?.film || item?.raw || item || {};
   return inferContentType(film) === requestedType;
+}
+
+function itemMatchesSingleContentType(item, contentType = "") {
+  const requestedType = normalizeText(contentType);
+  if (!requestedType || requestedType === "peu-importe") return false;
+  const film = item?.film || item?.raw || item || {};
+  return inferContentType(film) === requestedType;
+}
+
+function itemMatchesSingleOrigin(item, origin = "") {
+  const requestedOrigin = normalizeText(origin);
+  if (!requestedOrigin || requestedOrigin === "peu-importe") return false;
+  const film = item?.film || item?.raw || item || {};
+  return originMatches(requestedOrigin, film) === true;
+}
+
+function itemMatchesAnyOriginTarget(item, originTargets = []) {
+  const targets = uniqueStrings(
+    (Array.isArray(originTargets) ? originTargets : [])
+      .map((origin) => normalizeText(origin))
+      .filter((origin) => origin && origin !== "peu-importe")
+  );
+  if (!targets.length) return true;
+  return targets.some((origin) => itemMatchesSingleOrigin(item, origin));
 }
 
 function itemYear(item) {
@@ -876,50 +1055,114 @@ function itemIsRecent(item, minRecentYear = 2020) {
   return year >= minRecentYear;
 }
 
+function currentRecentYearFloor() {
+  return Math.max(2020, new Date().getFullYear() - 5);
+}
+
 function selectDiverse(scoredItems, max, options = {}) {
   const selected = [];
   const genreCounts = new Map();
-  const familyAnimationCap = Number.isFinite(options.familyAnimationCap)
-    ? options.familyAnimationCap
+  const animationCap = Number.isFinite(options.animationCap)
+    ? options.animationCap
     : Infinity;
+  const requiredGenreTargets = uniqueStrings(
+    Array.isArray(options.requiredGenreTargets)
+      ? options.requiredGenreTargets.map((genre) => normalizeGenreToken(genre))
+      : []
+  );
+  const requiredContentTypeTargets = uniqueStrings(
+    Array.isArray(options.requiredContentTypeTargets)
+      ? options.requiredContentTypeTargets
+          .map((contentType) => normalizeText(contentType))
+          .filter((contentType) => contentType && contentType !== "peu-importe")
+      : []
+  );
+  const requiredOriginTargets = uniqueStrings(
+    Array.isArray(options.requiredOriginTargets)
+      ? options.requiredOriginTargets
+          .map((origin) => normalizeText(origin))
+          .filter((origin) => origin && origin !== "peu-importe")
+      : []
+  );
   const minRecentItems = Math.min(
     max,
     Number.isFinite(options.minRecentItems) ? options.minRecentItems : 0
   );
   const minRecentYear = Number.isFinite(options.minRecentYear)
     ? options.minRecentYear
-    : 2020;
+    : currentRecentYearFloor();
+  const minOlderItems = Math.min(
+    max,
+    Number.isFinite(options.minOlderItems) ? options.minOlderItems : 0
+  );
   const minimumUsefulResults = Math.min(max, 5);
-  let familyAnimationCount = 0;
+  let animationCount = 0;
 
   function alreadySelected(item) {
     return selected.some((candidate) => candidate.key === item.key);
   }
 
-  function canTakeFamilyAnimation(item, enforceCap) {
+  function canTakeAnimation(item, enforceCap) {
     if (!enforceCap) return true;
     if (!itemLooksAnimated(item)) return true;
-    return familyAnimationCount < familyAnimationCap;
+    return animationCount < animationCap;
   }
 
   function take(item) {
     selected.push(item);
-    if (itemLooksAnimated(item)) familyAnimationCount += 1;
+    if (itemLooksAnimated(item)) animationCount += 1;
   }
 
   function tryTake(item) {
     if (alreadySelected(item)) return false;
-    if (!canTakeFamilyAnimation(item, true)) return false;
+    if (!canTakeAnimation(item, true)) return false;
     take(item);
     return true;
   }
 
-  function takeFrom(items, { enforceFamilyCap = true } = {}) {
+  function takeFrom(items, { enforceAnimationCap = true } = {}) {
     for (const item of items) {
       if (selected.length >= max) break;
       if (alreadySelected(item)) continue;
-      if (enforceFamilyCap && !canTakeFamilyAnimation(item, true)) continue;
+      if (enforceAnimationCap && !canTakeAnimation(item, true)) continue;
       take(item);
+    }
+  }
+
+  // In a group, every selected genre deserves a seat at the table when the pool allows it.
+  // Example: Action + Romance should not become "five action titles" just because action is more popular.
+  for (const genreTarget of requiredGenreTargets) {
+    if (selected.length >= max) break;
+    if (selected.some((item) => itemCanRepresentGenreTarget(item, genreTarget))) continue;
+    const representative = scoredItems.find(
+      (item) => itemCanRepresentGenreTarget(item, genreTarget) && canTakeAnimation(item, true)
+    );
+    if (representative) {
+      take(representative);
+    }
+  }
+
+  for (const contentTypeTarget of requiredContentTypeTargets) {
+    if (selected.length >= max) break;
+    if (selected.some((item) => itemMatchesSingleContentType(item, contentTypeTarget))) continue;
+    const representative = scoredItems.find(
+      (item) =>
+        itemMatchesSingleContentType(item, contentTypeTarget) &&
+        canTakeAnimation(item, true)
+    );
+    if (representative) {
+      take(representative);
+    }
+  }
+
+  for (const originTarget of requiredOriginTargets) {
+    if (selected.length >= max) break;
+    if (selected.some((item) => itemMatchesSingleOrigin(item, originTarget))) continue;
+    const representative = scoredItems.find(
+      (item) => itemMatchesSingleOrigin(item, originTarget) && canTakeAnimation(item, true)
+    );
+    if (representative) {
+      take(representative);
     }
   }
 
@@ -934,10 +1177,24 @@ function selectDiverse(scoredItems, max, options = {}) {
     }
   }
 
+  if (minOlderItems > 0) {
+    for (const item of scoredItems) {
+      if (selected.length >= max) break;
+      if (
+        selected.filter((candidate) => !itemIsRecent(candidate, minRecentYear)).length >=
+        minOlderItems
+      ) {
+        break;
+      }
+      if (itemIsRecent(item, minRecentYear)) continue;
+      tryTake(item);
+    }
+  }
+
   for (const item of scoredItems) {
     if (selected.length >= max) break;
     if (alreadySelected(item)) continue;
-    if (!canTakeFamilyAnimation(item, true)) continue;
+    if (!canTakeAnimation(item, true)) continue;
     const genre = item.primaryGenre || "autre";
     const count = genreCounts.get(genre) || 0;
     if (count >= 2 && selected.length < max - 1) continue;
@@ -946,20 +1203,24 @@ function selectDiverse(scoredItems, max, options = {}) {
   }
 
   if (selected.length < max) {
-    takeFrom(scoredItems, { enforceFamilyCap: true });
+    takeFrom(scoredItems, { enforceAnimationCap: true });
   }
 
   // If the pool is genuinely too small, fill the list rather than returning too few.
-  // Once 5 coherent choices exist, keep the family/animation cap instead of padding with cartoons.
+  // Once 5 coherent choices exist, keep the animation cap instead of padding with cartoons.
   if (selected.length < max) {
     takeFrom(
       scoredItems.filter((item) => !itemLooksAnimated(item)),
-      { enforceFamilyCap: false }
+      { enforceAnimationCap: false }
     );
   }
 
-  if (selected.length < max && selected.length < minimumUsefulResults) {
-    takeFrom(scoredItems, { enforceFamilyCap: false });
+  if (
+    selected.length < max &&
+    selected.length < minimumUsefulResults &&
+    !Number.isFinite(animationCap)
+  ) {
+    takeFrom(scoredItems, { enforceAnimationCap: false });
   }
 
   return selected;
@@ -968,19 +1229,26 @@ function selectDiverse(scoredItems, max, options = {}) {
 function buildRandomizedOrder(items) {
   if (!items.length) return [];
   const best = items[0].score || 0;
-  const coherentPool = items.filter((item) => item.score >= Math.max(40, best - 20));
+  const coherentPool = items.filter((item) => item.score >= Math.max(45, best - 24));
   const rest = items.filter((item) => !coherentPool.includes(item));
   return [...shuffle(coherentPool), ...rest];
 }
 
 function buildVariedOrder(items) {
   if (!items.length) return [];
-  const leadSize = Math.min(2, items.length);
-  const topWindowSize = Math.min(24, Math.max(0, items.length - leadSize));
-  const lead = items.slice(0, leadSize);
-  const topWindow = shuffle(items.slice(leadSize, leadSize + topWindowSize));
-  const rest = items.slice(leadSize + topWindowSize);
-  return [...lead, ...topWindow, ...rest];
+  const bestScore = items[0].score || 0;
+  const bestRanking = items[0].rankingScore || bestScore;
+  const windowSize = Math.min(36, items.length);
+  const topWindow = items.slice(0, windowSize);
+  const coherentWindow = topWindow.filter((item) => {
+    const score = item.score || 0;
+    const rankingScore = item.rankingScore || score;
+    return score >= Math.max(48, bestScore - 18) || rankingScore >= bestRanking - 5;
+  });
+  const varied = shuffle(coherentWindow.length >= 5 ? coherentWindow : topWindow);
+  const variedKeys = new Set(varied.map((item) => item.key));
+  const rest = items.filter((item) => !variedKeys.has(item.key));
+  return [...varied, ...rest];
 }
 
 function enrichItem(item) {
@@ -1021,11 +1289,22 @@ export function buildRecommendations({
     strictTargets.genre,
     ...users.map((user) => user.genre),
   ]);
-  const familyAnimationCap =
-    !wantsAnimation(requestedGenreTargets) &&
-    !disneyIsRequested(globalAnswers)
-      ? 0
-      : Infinity;
+  const requestedContentTypeTargets = uniqueStrings([
+    strictTargets.contentType && strictTargets.contentType !== "peu-importe"
+      ? strictTargets.contentType
+      : "",
+    ...users
+      .map((user) => user.contentType)
+      .filter((contentType) => contentType && contentType !== "peu-importe"),
+  ]);
+  const requestedOriginTargets = uniqueStrings([
+    strictTargets.origin && strictTargets.origin !== "peu-importe" ? strictTargets.origin : "",
+    ...users
+      .map((user) => user.origin)
+      .filter((origin) => origin && origin !== "peu-importe"),
+  ]);
+  const animationPreference = animationPreferenceForGroup(users, strictTargets);
+  const animationCap = animationPreference.cap;
   const excluded = new Set(excludedKeys.map((key) => String(key)));
   const avoided = new Set(avoidTitles.map((title) => normalizeText(title)));
 
@@ -1037,8 +1316,7 @@ export function buildRecommendations({
     .filter((item) => itemMatchesContentType(item, strictTargets.contentType))
     .filter((item) =>
       shouldBlockAnimation({
-        globalAnswers,
-        genreTargets: requestedGenreTargets,
+        animationCap,
         film: item?.film,
       })
         ? false
@@ -1050,6 +1328,10 @@ export function buildRecommendations({
     if (avoided.has(normalizeText(item.film.title))) return false;
     return true;
   });
+  const originRestrictionActive = requestedOriginTargets.length > 0;
+  if (originRestrictionActive) {
+    unique = unique.filter((item) => itemMatchesAnyOriginTarget(item, requestedOriginTargets));
+  }
 
   const hasGenreTarget = Boolean(
     strictTargets.genre || users.some((user) => Boolean(user.genre))
@@ -1062,12 +1344,13 @@ export function buildRecommendations({
       ? genrePreferred.filter((item) => item?.matchDetails?.typeMatched === true)
       : genrePreferred;
   const originPreferred =
-    strictTargets.origin && strictTargets.origin !== "peu-importe"
-      ? typePreferred.filter((item) => item?.matchDetails?.originMatch === true)
+    requestedOriginTargets.length > 0
+      ? typePreferred.filter((item) => itemMatchesAnyOriginTarget(item, requestedOriginTargets))
       : typePreferred;
 
-  // On privilegie les criteres importants, sans bloquer si le pool est trop petit.
-  if (originPreferred.length >= Math.min(max, 3)) {
+  // On privilegie les criteres importants. L'origine demandee reste stricte
+  // des qu'un resultat exact existe, meme si le pool exact est petit.
+  if (requestedOriginTargets.length > 0 && originPreferred.length > 0) {
     unique = originPreferred;
   } else if (typePreferred.length >= Math.min(max, 3)) {
     unique = typePreferred;
@@ -1087,7 +1370,10 @@ export function buildRecommendations({
         if (titleKey && currentTitles.has(titleKey)) return null;
         if (excluded.has(key)) return null;
         if (titleKey && avoided.has(titleKey)) return null;
-        if (shouldBlockAnimation({ globalAnswers, genreTargets: requestedGenreTargets, film })) {
+        if (shouldBlockAnimation({ animationCap, film })) {
+          return null;
+        }
+        if (shouldBlockFamilyUnsafe({ genreTargets: requestedGenreTargets, film })) {
           return null;
         }
         if (!itemMatchesContentType(film, strictTargets.contentType)) {
@@ -1096,7 +1382,14 @@ export function buildRecommendations({
         if (!itemMatchesGenreTargets(film, requestedGenreTargets)) {
           return null;
         }
-        return buildFallbackScoredItem({ film, strictTargets, globalAnswers });
+        const fallbackItem = buildFallbackScoredItem({ film, strictTargets, globalAnswers });
+        if (
+          originRestrictionActive &&
+          !itemMatchesAnyOriginTarget(fallbackItem, requestedOriginTargets)
+        ) {
+          return null;
+        }
+        return fallbackItem;
       })
       .filter(Boolean);
 
@@ -1111,9 +1404,11 @@ export function buildRecommendations({
     const emergency = dedupeFilmPool(Array.isArray(films) ? films : [])
       .filter(
         (film) =>
-          !shouldBlockAnimation({ globalAnswers, genreTargets: requestedGenreTargets, film }) &&
+          !shouldBlockAnimation({ animationCap, film }) &&
+          !shouldBlockFamilyUnsafe({ genreTargets: requestedGenreTargets, film }) &&
           itemMatchesContentType(film, strictTargets.contentType) &&
-          itemMatchesGenreTargets(film, requestedGenreTargets)
+          itemMatchesGenreTargets(film, requestedGenreTargets) &&
+          (!originRestrictionActive || itemMatchesAnyOriginTarget(film, requestedOriginTargets))
       )
       .map((film) => buildFallbackScoredItem({ film, strictTargets, globalAnswers }))
       .filter(Boolean);
@@ -1130,25 +1425,34 @@ export function buildRecommendations({
   const baseRanked = filteredRanked.length >= max ? filteredRanked : ranked;
   const ordered = randomize ? buildRandomizedOrder(baseRanked) : buildVariedOrder(baseRanked);
   const diverse = selectDiverse(ordered, max, {
-    familyAnimationCap,
+    animationCap,
+    requiredGenreTargets: requestedGenreTargets,
+    requiredContentTypeTargets: requestedContentTypeTargets,
+    requiredOriginTargets: requestedOriginTargets,
     minRecentItems: 3,
-    minRecentYear: 2020,
+    minRecentYear: currentRecentYearFloor(),
+    minOlderItems: 1,
   });
 
   if (diverse.length >= max) {
     return diverse
       .filter((item) => itemMatchesGenreTargets(item, requestedGenreTargets))
       .filter((item) => itemMatchesContentType(item, strictTargets.contentType))
+      .filter((item) => !originRestrictionActive || itemMatchesAnyOriginTarget(item, requestedOriginTargets))
       .slice(0, max)
       .map(enrichItem);
   }
 
+  let fallbackAnimationCount = diverse.filter((item) => itemLooksAnimated(item)).length;
   const firstFallbackSource = (randomize ? shuffle(baseRanked) : baseRanked).filter((item) => {
     if (diverse.some((candidate) => candidate.key === item.key)) return false;
     if (!itemMatchesGenreTargets(item, requestedGenreTargets)) return false;
     if (!itemMatchesContentType(item, strictTargets.contentType)) return false;
-    if (!Number.isFinite(familyAnimationCap) || !itemLooksAnimated(item)) return true;
-    return false;
+    if (originRestrictionActive && !itemMatchesAnyOriginTarget(item, requestedOriginTargets)) return false;
+    if (!Number.isFinite(animationCap) || !itemLooksAnimated(item)) return true;
+    if (fallbackAnimationCount >= animationCap) return false;
+    fallbackAnimationCount += 1;
+    return true;
   });
   let finalItems = [...diverse, ...firstFallbackSource].slice(0, max);
 
@@ -1157,7 +1461,8 @@ export function buildRecommendations({
       (item) =>
         !finalItems.some((candidate) => candidate.key === item.key) &&
         itemMatchesContentType(item, strictTargets.contentType) &&
-        itemMatchesGenreTargets(item, requestedGenreTargets)
+        itemMatchesGenreTargets(item, requestedGenreTargets) &&
+        (!originRestrictionActive || itemMatchesAnyOriginTarget(item, requestedOriginTargets))
     );
     finalItems = [...finalItems, ...relaxedFallback].slice(0, max);
   }
@@ -1174,7 +1479,10 @@ export function buildRecommendations({
         const titleKey = normalizeText(film?.title);
         if (selectedKeys.has(key)) return null;
         if (titleKey && selectedTitles.has(titleKey)) return null;
-        if (shouldBlockAnimation({ globalAnswers, genreTargets: requestedGenreTargets, film })) {
+        if (shouldBlockAnimation({ animationCap, film })) {
+          return null;
+        }
+        if (shouldBlockFamilyUnsafe({ genreTargets: requestedGenreTargets, film })) {
           return null;
         }
         if (!itemMatchesContentType(film, strictTargets.contentType)) {
@@ -1183,20 +1491,32 @@ export function buildRecommendations({
         if (!itemMatchesGenreTargets(film, requestedGenreTargets)) {
           return null;
         }
-        return buildFallbackScoredItem({ film, strictTargets, globalAnswers });
+        const fallbackItem = buildFallbackScoredItem({ film, strictTargets, globalAnswers });
+        if (
+          originRestrictionActive &&
+          !itemMatchesAnyOriginTarget(fallbackItem, requestedOriginTargets)
+        ) {
+          return null;
+        }
+        return fallbackItem;
       })
       .filter(Boolean);
 
     finalItems = selectDiverse(dedupeByTitle([...finalItems, ...emergency]), max, {
-      familyAnimationCap,
+      animationCap,
+      requiredGenreTargets: requestedGenreTargets,
+      requiredContentTypeTargets: requestedContentTypeTargets,
+      requiredOriginTargets: requestedOriginTargets,
       minRecentItems: 0,
-      minRecentYear: 2020,
+      minRecentYear: currentRecentYearFloor(),
+      minOlderItems: 0,
     });
   }
 
   return finalItems
     .filter((item) => itemMatchesGenreTargets(item, requestedGenreTargets))
     .filter((item) => itemMatchesContentType(item, strictTargets.contentType))
+    .filter((item) => !originRestrictionActive || itemMatchesAnyOriginTarget(item, requestedOriginTargets))
     .map(enrichItem);
 }
 
