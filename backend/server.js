@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const fs = require("fs");
 const path = require("path");
 
 console.log("[BOOT] server.js is executing");
@@ -45,12 +46,27 @@ function readEnvValue(...keys) {
   return "";
 }
 
+function readTmdbKeyFromEnvFile() {
+  try {
+    const content = fs.readFileSync(path.join(__dirname, ".env"), "utf8");
+    const namedMatch = content.match(
+      /(?:^|\n)\s*(?:TMDB_API_KEY|tmdb_api_key|EXPO_PUBLIC_TMDB_API_KEY|expo_public_tmdb_api_key)\s*=\s*([a-z0-9]{32})/i
+    );
+    if (namedMatch?.[1]) return namedMatch[1].trim();
+
+    const looseMatch = content.match(/\b[a-f0-9]{32}\b/i);
+    return looseMatch?.[0]?.trim() || "";
+  } catch {
+    return "";
+  }
+}
+
 const TMDB_API_KEY = readEnvValue(
   "TMDB_API_KEY",
   "tmdb_api_key",
   "EXPO_PUBLIC_TMDB_API_KEY",
   "expo_public_tmdb_api_key"
-);
+) || readTmdbKeyFromEnvFile();
 const TMDB_BEARER_TOKEN = readEnvValue("TMDB_BEARER_TOKEN", "tmdb_bearer_token");
 const TMDB_BASE_URL = "https://api.themoviedb.org/3";
 const FILMS_CACHE_TTL_MS = Number(process.env.FILMS_CACHE_TTL_MS || 10 * 60 * 1000);
