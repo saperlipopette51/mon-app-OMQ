@@ -388,7 +388,7 @@ function parseAgeBucket(value) {
 
 function isFamilySafeFilm(film) {
   if (Boolean(film?.adult)) return false;
-  const bucket = parseAgeBucket(film?.age_restriction || film?.certification || film?.age || "");
+  const bucket = getFilmAgeBucket(film);
   return bucket === 0;
 }
 
@@ -398,6 +398,12 @@ function parseSelectedAgeBucket(value) {
   // "Tout public" means no age restriction: not 12+, not 16+, not 18+.
   if (text === "all" || text.includes("tout public")) return 0;
   return parseAgeBucket(value);
+}
+
+function getFilmAgeBucket(film) {
+  const numericBucket = Number(film?.age_bucket);
+  if (Number.isFinite(numericBucket)) return numericBucket;
+  return parseAgeBucket(film?.age_restriction || film?.certification || film?.age || "");
 }
 
 function isMatureAgeRequest(value) {
@@ -487,9 +493,7 @@ function ageMatches(selectedAge, film) {
   if (selectedBucket === null) return true;
   if (selectedBucket < 18 && Boolean(film.adult)) return false;
 
-  const filmBucket = parseAgeBucket(
-    film.age_restriction || film.certification || film.age || ""
-  );
+  const filmBucket = getFilmAgeBucket(film);
   if (isMatureAgeRequest(selectedAge)) {
     if (filmBucket === null) return !looksFamilyOrAnimation(film);
     return selectedBucket >= 18 ? filmBucket >= 16 : filmBucket === 16;
@@ -550,9 +554,7 @@ function ageMatchInfo(selectedAge, film) {
     return { requested: true, matched: false, known: true, unsafe: true };
   }
 
-  const filmBucket = parseAgeBucket(
-    film.age_restriction || film.certification || film.age || ""
-  );
+  const filmBucket = getFilmAgeBucket(film);
   if (isMatureAgeRequest(selectedAge)) {
     if (filmBucket === null) {
       const unsafe = looksFamilyOrAnimation(film);
@@ -743,11 +745,22 @@ function qualityBonus(film) {
       : age <= 20
       ? 0.25
       : 0.1;
+  const discoveryFactor =
+    popularity <= 0
+      ? 0.25
+      : popularity <= 25
+      ? 0.95
+      : popularity <= 90
+      ? 1
+      : popularity <= 180
+      ? 0.65
+      : 0.25;
   return (
-    ratingFactor * 0.4 +
-    popularityFactor * 0.3 +
-    recencyFactor * 0.2 +
-    voteCountFactor * 0.1
+    ratingFactor * 0.38 +
+    recencyFactor * 0.28 +
+    discoveryFactor * 0.22 +
+    voteCountFactor * 0.08 +
+    popularityFactor * 0.04
   );
 }
 
@@ -1220,19 +1233,26 @@ function selectDiverse(scoredItems, max, options = {}) {
 function buildRandomizedOrder(items) {
   if (!items.length) return [];
   const best = items[0].score || 0;
-  const coherentPool = items.filter((item) => item.score >= Math.max(40, best - 20));
+  const coherentPool = items.filter((item) => item.score >= Math.max(45, best - 24));
   const rest = items.filter((item) => !coherentPool.includes(item));
   return [...shuffle(coherentPool), ...rest];
 }
 
 function buildVariedOrder(items) {
   if (!items.length) return [];
-  const leadSize = Math.min(2, items.length);
-  const topWindowSize = Math.min(24, Math.max(0, items.length - leadSize));
-  const lead = items.slice(0, leadSize);
-  const topWindow = shuffle(items.slice(leadSize, leadSize + topWindowSize));
-  const rest = items.slice(leadSize + topWindowSize);
-  return [...lead, ...topWindow, ...rest];
+  const bestScore = items[0].score || 0;
+  const bestRanking = items[0].rankingScore || bestScore;
+  const windowSize = Math.min(36, items.length);
+  const topWindow = items.slice(0, windowSize);
+  const coherentWindow = topWindow.filter((item) => {
+    const score = item.score || 0;
+    const rankingScore = item.rankingScore || score;
+    return score >= Math.max(48, bestScore - 18) || rankingScore >= bestRanking - 5;
+  });
+  const varied = shuffle(coherentWindow.length >= 5 ? coherentWindow : topWindow);
+  const variedKeys = new Set(varied.map((item) => item.key));
+  const rest = items.filter((item) => !variedKeys.has(item.key));
+  return [...varied, ...rest];
 }
 
 function enrichItem(item) {
@@ -1312,9 +1332,7 @@ export function buildRecommendations({
     if (avoided.has(normalizeText(item.film.title))) return false;
     return true;
   });
-  const originRestrictionActive =
-    requestedOriginTargets.length > 0 &&
-    unique.some((item) => itemMatchesAnyOriginTarget(item, requestedOriginTargets));
+  const originRestrictionActive = requestedOriginTargets.length > 0;
   if (originRestrictionActive) {
     unique = unique.filter((item) => itemMatchesAnyOriginTarget(item, requestedOriginTargets));
   }
@@ -1330,12 +1348,13 @@ export function buildRecommendations({
       ? genrePreferred.filter((item) => item?.matchDetails?.typeMatched === true)
       : genrePreferred;
   const originPreferred =
-    strictTargets.origin && strictTargets.origin !== "peu-importe"
-      ? typePreferred.filter((item) => item?.matchDetails?.originMatch === true)
+    requestedOriginTargets.length > 0
+      ? typePreferred.filter((item) => itemMatchesAnyOriginTarget(item, requestedOriginTargets))
       : typePreferred;
 
-  // On privilegie les criteres importants, sans bloquer si le pool est trop petit.
-  if (originPreferred.length >= Math.min(max, 3)) {
+  // On privilegie les criteres importants. L'origine demandee reste stricte
+  // des qu'un resultat exact existe, meme si le pool exact est petit.
+  if (requestedOriginTargets.length > 0 && originPreferred.length > 0) {
     unique = originPreferred;
   } else if (typePreferred.length >= Math.min(max, 3)) {
     unique = typePreferred;

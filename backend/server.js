@@ -1113,7 +1113,27 @@ function qualityTieBreaker(film) {
       : age <= 20
       ? 0.25
       : 0.1;
-  return rating * 2.4 + pop * 1.8 + recency * 1.2 + votes * 0.6;
+  const discoverySweetSpot =
+    popularity <= 0
+      ? 0.25
+      : popularity <= 25
+      ? 0.95
+      : popularity <= 90
+      ? 1
+      : popularity <= 180
+      ? 0.65
+      : 0.25;
+  const blockbusterPenalty = popularity > 220 ? 0.75 : popularity > 120 ? 0.35 : 0;
+
+  return rating * 2.6 + recency * 1.9 + discoverySweetSpot * 1.5 + votes * 0.7 + pop * 0.45 - blockbusterPenalty;
+}
+
+function isDiscoveryCandidate(film) {
+  const popularity = Number(film?.popularity || 0);
+  const voteAverage = Number(film?.vote_average || 0);
+  const year = normalizeYear(film?.year) || normalizeYear(film?.release_date);
+  const age = year ? Math.max(0, new Date().getFullYear() - year) : null;
+  return voteAverage >= 6.5 && popularity > 0 && popularity <= 130 && (age === null || age <= 12);
 }
 
 function scoreFilmForBackend(film, {
@@ -1160,6 +1180,7 @@ function scoreFilmForBackend(film, {
 
   return {
     ...film,
+    discovery: Boolean(film.discovery || isDiscoveryCandidate(film)),
     backend_score: backendScore,
     backend_rank_score: backendScore + qualityTieBreaker(film),
   };
@@ -1181,11 +1202,9 @@ function isFamilyOrAnimationFilm(film) {
 
 function diversifyRankedFilms(rankedFilms, limit = 90, options = {}) {
   if (!rankedFilms.length) return [];
-  const lead = rankedFilms.slice(0, Math.min(3, rankedFilms.length));
-  const window = rankedFilms.slice(lead.length, Math.min(45, rankedFilms.length));
-  const rest = rankedFilms.slice(Math.min(45, rankedFilms.length));
-  const shuffledWindow = [...window].sort(() => Math.random() - 0.5);
-  const ordered = [...lead, ...shuffledWindow, ...rest];
+  const window = rankedFilms.slice(0, Math.min(60, rankedFilms.length));
+  const rest = rankedFilms.slice(Math.min(60, rankedFilms.length));
+  const ordered = [...window].sort(() => Math.random() - 0.5).concat(rest);
   const familyAnimationCap = Number.isFinite(options.familyAnimationCap)
     ? options.familyAnimationCap
     : Infinity;
@@ -1217,6 +1236,32 @@ function diversifyRankedFilms(rankedFilms, limit = 90, options = {}) {
   return selected;
 }
 
+function discoverSortForPage(mediaType, page = 1) {
+  const rotation =
+    mediaType === "tv"
+      ? ["popularity.desc", "vote_average.desc", "first_air_date.desc", "vote_count.desc"]
+      : ["popularity.desc", "vote_average.desc", "primary_release_date.desc", "vote_count.desc"];
+  const index = Math.max(0, (Number(page) || 1) - 1) % rotation.length;
+  return rotation[index];
+}
+
+function applyDiscoverSort(url, { mediaType, page }) {
+  const sortBy = discoverSortForPage(mediaType, page);
+  url.searchParams.set("sort_by", sortBy);
+
+  if (sortBy === "vote_average.desc") {
+    url.searchParams.set("vote_count.gte", mediaType === "tv" ? "35" : "70");
+  }
+
+  if (sortBy === "primary_release_date.desc") {
+    url.searchParams.set("primary_release_date.lte", new Date().toISOString().slice(0, 10));
+  }
+
+  if (sortBy === "first_air_date.desc") {
+    url.searchParams.set("first_air_date.lte", new Date().toISOString().slice(0, 10));
+  }
+}
+
 async function fetchTmdbFilms({
   page = 1,
   language = "fr-FR",
@@ -1245,7 +1290,7 @@ async function fetchTmdbFilms({
   if (mediaType === "movie") {
     url.searchParams.set("include_video", "false");
   }
-  url.searchParams.set("sort_by", "popularity.desc");
+  applyDiscoverSort(url, { mediaType, page });
   url.searchParams.set("page", String(page));
   url.searchParams.set("watch_region", "FR");
   url.searchParams.set("with_watch_monetization_types", "flatrate");
@@ -1376,7 +1421,7 @@ async function fetchTmdbDiscoverWidePage({
   if (mediaType === "movie") {
     url.searchParams.set("include_video", "false");
   }
-  url.searchParams.set("sort_by", "popularity.desc");
+  applyDiscoverSort(url, { mediaType, page });
   url.searchParams.set("page", String(page));
   url.searchParams.set("watch_region", "FR");
   url.searchParams.set("with_watch_monetization_types", "flatrate");
