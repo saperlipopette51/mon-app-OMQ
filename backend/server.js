@@ -1027,6 +1027,14 @@ function isFamilySafeFilm(film) {
   return certificationBucket(film?.certification || film?.age_restriction) === 0;
 }
 
+function isHorrorFilm(film) {
+  const genreIds = Array.isArray(film?.genre_ids) ? film.genre_ids.map(Number) : [];
+  const genreText = normalizeTitleKey(
+    `${film?.genre || ""} ${Array.isArray(film?.genres) ? film.genres.join(" ") : ""}`
+  );
+  return genreIds.includes(27) || genreText.includes("horreur") || genreText.includes("horror");
+}
+
 function filmMatchesGenre(film, genre) {
   const genreId = normalizeGenreId(genre);
   if (!genreId) return true;
@@ -1151,12 +1159,15 @@ function scoreFilmForBackend(film, {
     : normalizeGenreId(genre)
     ? [normalizeGenreId(genre)]
     : [];
+  const normalizedAgeRestriction = normalizeAgeRestriction(ageRestriction);
   if (!filmMatchesAnyGenre(film, activeGenres)) return null;
   if (activeGenres.includes("10751") && !isFamilySafeFilm(film)) return null;
+  if (normalizedAgeRestriction === "all" && !activeGenres.includes("27") && isHorrorFilm(film)) {
+    return null;
+  }
   if (!filmMatchesType(film, contentType)) return null;
   const normalizedOrigin = normalizeOrigin(origin);
   if (normalizedOrigin && !filmMatchesOrigin(film, normalizedOrigin)) return null;
-  const normalizedAgeRestriction = normalizeAgeRestriction(ageRestriction);
   const normalizedPlatform = normalizePlatform(platform);
   const familyWithoutAnimation = activeGenres.includes("10751") && !activeGenres.includes("16");
   const animationBlocked =

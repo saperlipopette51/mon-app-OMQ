@@ -444,12 +444,24 @@ function looksAnimated(film) {
   );
 }
 
+function looksHorror(film) {
+  const genreIds = Array.isArray(film?.genre_ids) ? film.genre_ids.map(Number) : [];
+  const genreText = normalizeText(
+    `${film?.genre || ""} ${Array.isArray(film?.genres) ? film.genres.join(" ") : ""}`
+  );
+  return genreIds.includes(27) || genreText.includes("horreur") || genreText.includes("horror");
+}
+
 function wantsAnimation(genreTargets = []) {
   return genreTargets.some((genre) => genre === "animation");
 }
 
 function wantsFamily(genreTargets = []) {
   return genreTargets.some((genre) => genre === "family");
+}
+
+function wantsHorror(genreTargets = []) {
+  return genreTargets.some((genre) => genre === "horror");
 }
 
 function animationPreferenceForGroup(users = [], strictTargets = {}) {
@@ -479,6 +491,10 @@ function shouldBlockAnimation({ animationCap, film }) {
 
 function shouldBlockFamilyUnsafe({ genreTargets, film }) {
   return wantsFamily(genreTargets) && !isFamilySafeFilm(film);
+}
+
+function shouldBlockToutPublicHorror({ selectedAge, genreTargets, film }) {
+  return isToutPublicRequest(selectedAge) && !wantsHorror(genreTargets) && looksHorror(film);
 }
 
 function familyAnimationOverloadPenalty({ selectedAge, film, filmGenres, genreTargets }) {
@@ -1330,6 +1346,15 @@ export function buildRecommendations({
   let unique = dedupeByTitle(scored).filter((item) => {
     if (excluded.has(item.key)) return false;
     if (avoided.has(normalizeText(item.film.title))) return false;
+    if (
+      shouldBlockToutPublicHorror({
+        selectedAge: globalAnswers.ageRestriction,
+        genreTargets: requestedGenreTargets,
+        film: item.film,
+      })
+    ) {
+      return false;
+    }
     return true;
   });
   const originRestrictionActive = requestedOriginTargets.length > 0;
@@ -1380,6 +1405,15 @@ export function buildRecommendations({
         if (shouldBlockFamilyUnsafe({ genreTargets: requestedGenreTargets, film })) {
           return null;
         }
+        if (
+          shouldBlockToutPublicHorror({
+            selectedAge: globalAnswers.ageRestriction,
+            genreTargets: requestedGenreTargets,
+            film,
+          })
+        ) {
+          return null;
+        }
         if (!itemMatchesContentType(film, strictTargets.contentType)) {
           return null;
         }
@@ -1410,6 +1444,11 @@ export function buildRecommendations({
         (film) =>
           !shouldBlockAnimation({ animationCap, film }) &&
           !shouldBlockFamilyUnsafe({ genreTargets: requestedGenreTargets, film }) &&
+          !shouldBlockToutPublicHorror({
+            selectedAge: globalAnswers.ageRestriction,
+            genreTargets: requestedGenreTargets,
+            film,
+          }) &&
           itemMatchesContentType(film, strictTargets.contentType) &&
           itemMatchesGenreTargets(film, requestedGenreTargets) &&
           (!originRestrictionActive || itemMatchesAnyOriginTarget(film, requestedOriginTargets))
@@ -1487,6 +1526,15 @@ export function buildRecommendations({
           return null;
         }
         if (shouldBlockFamilyUnsafe({ genreTargets: requestedGenreTargets, film })) {
+          return null;
+        }
+        if (
+          shouldBlockToutPublicHorror({
+            selectedAge: globalAnswers.ageRestriction,
+            genreTargets: requestedGenreTargets,
+            film,
+          })
+        ) {
           return null;
         }
         if (!itemMatchesContentType(film, strictTargets.contentType)) {
