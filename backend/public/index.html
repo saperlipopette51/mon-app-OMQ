@@ -8,7 +8,7 @@
       content="OMQ aide a choisir rapidement quoi regarder ce soir, seul, en couple ou en groupe."
     />
     <title>OMQ : On mate quoi ?</title>
-    <link rel="stylesheet" href="/styles.css?v=28" />
+    <link rel="stylesheet" href="/styles.css?v=30" />
   </head>
   <body>
     <header class="topbar">
@@ -31,13 +31,28 @@
             Fais le quiz, ajoute les envies du groupe, et OMQ sort une s&eacute;lection claire
             avec des p&eacute;pites r&eacute;centes et moins d&eacute;j&agrave;-vu.
           </p>
+          <div class="hero-pills" aria-label="Points forts OMQ">
+            <span>Match de groupe</span>
+            <span>5 propositions</span>
+            <span>Affiches et notes</span>
+          </div>
         </div>
 
         <div id="omq-app" class="quiz-panel" aria-live="polite"></div>
       </section>
 
       <aside class="side-stage" aria-label="Identite OMQ">
-        <img class="mascot" src="/assets/pop-et-corn.jpeg" alt="Pop et Corn, les mascottes OMQ" />
+        <div class="mascot-card">
+          <img class="mascot" src="/assets/pop-et-corn.jpeg" alt="Pop et Corn, les mascottes OMQ" />
+          <div class="mascot-caption">
+            <strong>Pop propose.</strong>
+            <span>Corn tranche.</span>
+          </div>
+        </div>
+        <div class="preview-stack" aria-label="Apercu de l'experience OMQ">
+          <img src="/assets/quiz.jpeg" alt="Ecran de quiz OMQ" />
+          <img src="/assets/selection.jpeg" alt="Ecran de selection OMQ" />
+        </div>
         <div class="status-strip">
           <span>iOS en verification</span>
           <span>Android en tests</span>
@@ -56,6 +71,6 @@
       <a class="button secondary" href="/privacy">Politique de confidentialit&eacute;</a>
     </section>
 
-    <script type="module" src="/app.js?v=29"></script>
+    <script type="module" src="/app.js?v=30"></script>
   </body>
 </html>

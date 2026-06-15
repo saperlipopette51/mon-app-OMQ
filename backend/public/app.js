@@ -2670,11 +2670,24 @@ function restart() {
 
 function optionButton({ option, active, onClick, wide = false }) {
   return `
-    <button class="option ${active ? "active" : ""}" type="button" data-action="${onClick}" data-value="${escapeHtml(option.value)}">
+    <button class="option ${active ? "active" : ""}" type="button" data-action="${onClick}" data-value="${escapeHtml(option.value)}" aria-pressed="${active ? "true" : "false"}">
       <span class="icon">${escapeHtml(option.icon)}</span>
       <strong>${escapeHtml(option.label)}</strong>
     </button>
   `;
+}
+
+function getStepMood(step) {
+  if (!step) return "OMQ ajuste la selection.";
+  if (step.type === "participants") return "Pop compte les spectateurs, Corn prepare le tri.";
+  if (step.type === "platforms") return "On garde seulement les plateformes utiles pour la soiree.";
+  if (step.type === "age") return "Le filtre age evite les mauvaises surprises.";
+  if (step.type === "summary") return "Dernier regard avant de lancer la selection.";
+  if (step.type === "name") return "Chaque avis comptera dans le match final.";
+  if (step.type === "contentType") return "Film ou serie, on cale d'abord le format.";
+  if (step.type === "genre") return "Le genre donne l'ambiance de la soiree.";
+  if (step.type === "origin") return "L'origine aide OMQ a trouver une piste plus precise.";
+  return "OMQ ajuste la selection.";
 }
 
 function renderParticipants() {
@@ -2870,8 +2883,8 @@ function renderResultCard(item) {
   const why = item.why || getMatchSummary(item, platformLabel, ratingLabel, matchScore);
   const poster = item.poster_url || item.posterUri || item.poster_path || "";
   const posterHtml = poster
-    ? `<img class="poster" src="${escapeHtml(normalizePosterUrl(poster))}" alt="" loading="lazy" />`
-    : `<div class="poster poster-fallback">OMQ</div>`;
+    ? `<div class="poster-wrap"><img class="poster" src="${escapeHtml(normalizePosterUrl(poster))}" alt="" loading="lazy" /><span class="poster-score">${matchScore}%</span></div>`
+    : `<div class="poster-wrap"><div class="poster poster-fallback">OMQ</div><span class="poster-score">${matchScore}%</span></div>`;
 
   return `
     <article class="result-card">
@@ -3773,6 +3786,7 @@ function render() {
     </div>
     <div class="progress"><span></span></div>
     <div class="panel-body">
+      <div class="step-mood">${escapeHtml(getStepMood(step))}</div>
       ${body}
       <div class="actions">
         <button class="button ghost" type="button" data-action="back" ${state.stepIndex === 0 ? "disabled" : ""}>Retour</button>
