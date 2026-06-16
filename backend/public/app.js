@@ -2919,7 +2919,7 @@ function renderResultCard(item) {
             👁️ Deja vu
           </button>
           <button class="button secondary" type="button" data-action="favorite" data-key="${escapeHtml(key)}" ${favoriteDisabled}>
-            ${isFavorite ? "⭐ Favori ajoute" : `⭐ Favori (${favoriteRemaining})`}
+            ${isFavorite ? "⭐ Favori ajoute" : "⭐ Favori"}
           </button>
         </div>
       </div>
