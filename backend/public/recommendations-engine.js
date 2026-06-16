@@ -130,10 +130,10 @@ const PLATFORM_LABELS = {
 };
 
 const AGE_LABELS = {
-  all: "tout public",
-  12: "12+",
-  16: "16+",
-  18: "18+",
+  all: "famille / tout public",
+  12: "ado 12+",
+  16: "ado 16+",
+  18: "adulte 18+",
 };
 
 const READABLE_LABELS = {
@@ -307,13 +307,13 @@ function createFallbackWhyLine({ globalAnswers, primaryGenre, contentType }) {
   }
   if (globalAnswers.ageRestriction) {
     details.push(
-      `l'age ${AGE_LABELS[globalAnswers.ageRestriction] || globalAnswers.ageRestriction}`
+      `le niveau ${AGE_LABELS[globalAnswers.ageRestriction] || globalAnswers.ageRestriction}`
     );
   }
   if (!details.length) {
-    return "Choix de secours coherent: pas parfait, mais assez proche pour sauver la soiree.";
+    return "Choix de secours coherent: OMQ elargit un peu les criteres pour eviter une impasse.";
   }
-  return `Choix de secours coherent: il garde ${humanJoin(details.slice(0, 3))}.`;
+  return `Choix de secours coherent: il garde ${humanJoin(details.slice(0, 3))} et elargit le reste sans forcer un resultat incoherent.`;
 }
 
 function buildFallbackScoredItem({ film, strictTargets, globalAnswers }) {
@@ -395,7 +395,7 @@ function isFamilySafeFilm(film) {
 function parseSelectedAgeBucket(value) {
   const text = normalizeText(value);
   if (!text) return null;
-  // "Tout public" means no age restriction: not 12+, not 16+, not 18+.
+  // "Famille / tout public" means no age restriction: not 12+, not 16+, not 18+.
   if (text === "all" || text.includes("tout public")) return 0;
   return parseAgeBucket(value);
 }
@@ -797,32 +797,40 @@ function createWhyLine({ users, globalAnswers, primaryGenre, contentType, matchD
     details.push(`le format ${toReadable(contentType)}`);
   }
   if (matchDetails.age && globalAnswers.ageRestriction) {
-    details.push(`l'age ${AGE_LABELS[globalAnswers.ageRestriction] || globalAnswers.ageRestriction}`);
+    details.push(`le niveau ${AGE_LABELS[globalAnswers.ageRestriction] || globalAnswers.ageRestriction}`);
   }
-  if (matchDetails.origin) details.push("l'origine demandee");
+  if (matchDetails.originTargets?.length && matchDetails.origin) details.push("l'origine demandee");
   if (matchDetails.platform && globalAnswers.platform) {
     details.push(`la plateforme ${PLATFORM_LABELS[globalAnswers.platform] || toReadable(globalAnswers.platform)}`);
   }
 
-  const intro = who
-    ? matchedUsers >= totalUsers
-      ? `Recommande pour ${who}`
-      : `Compromis malin pour ${who}`
-    : matchedUsers >= totalUsers
-    ? "Recommande pour le groupe"
-    : "Compromis malin pour le groupe";
+  const intro =
+    totalUsers > 1
+      ? matchedUsers >= totalUsers
+        ? "Il coche les envies de genre de tout le groupe."
+        : matchedUsers > 0
+        ? `Il coche le genre de ${who || `${matchedUsers}/${totalUsers} participants`} et sert de compromis pour les autres.`
+        : "Il ne coche pas le genre exact du groupe, mais garde les autres criteres importants."
+      : matchedUsers > 0
+      ? "Il colle au genre demande."
+      : "Il ouvre une piste proche, meme si le genre exact est moins present.";
 
   if (!details.length) {
-    return `${intro}: une proposition proche de vos envies, gardee pour ouvrir une piste sans forcer le match.`;
+    return `${intro} OMQ le garde comme piste de secours, proche du quiz sans forcer le match.`;
   }
 
-  const respected = humanJoin(details.slice(0, 4));
-  const conclusion =
-    matchedUsers >= totalUsers
-      ? "Bon potentiel pour mettre le groupe d'accord sans partir trop loin du quiz."
-      : "C'est un compromis propre: il garde l'essentiel et evite le choix trop aleatoire.";
+  const weaker = [];
+  if (!matchDetails.genre && primaryGenre) weaker.push("le genre exact");
+  if (!matchDetails.type && contentType && contentType !== "peu-importe") weaker.push("le format");
+  if (matchDetails.originTargets?.length && !matchDetails.origin) weaker.push("l'origine");
+  if (matchDetails.platformInfo?.requested && !matchDetails.platform) weaker.push("la plateforme");
 
-  return `${intro}: ${respected} est bien pris en compte. ${conclusion}`;
+  const respected = humanJoin(details.slice(0, 4));
+  const conclusion = weaker.length
+    ? `Point moins exact: ${humanJoin(weaker)}.`
+    : "Le match reste coherent avec les reponses du quiz.";
+
+  return `${intro} Criteres respectes: ${respected}. ${conclusion}`;
 }
 
 function scoreFilm(film, context) {
@@ -1149,6 +1157,19 @@ function selectDiverse(scoredItems, max, options = {}) {
     }
   }
 
+  function candidateWindow(predicate, neededCount = 1) {
+    const candidates = scoredItems.filter((item) => {
+      if (alreadySelected(item)) return false;
+      if (!canTakeAnimation(item, true)) return false;
+      return predicate(item);
+    });
+    const windowSize = Math.min(
+      candidates.length,
+      Math.max(12, Math.max(1, neededCount) * 8)
+    );
+    return [...shuffle(candidates.slice(0, windowSize)), ...candidates.slice(windowSize)];
+  }
+
   // In a group, every selected genre deserves a seat at the table when the pool allows it.
   // Example: Action + Romance should not become "five action titles" just because action is more popular.
   for (const genreTarget of requiredGenreTargets) {
@@ -1187,18 +1208,33 @@ function selectDiverse(scoredItems, max, options = {}) {
   }
 
   if (minRecentItems > 0) {
-    for (const item of scoredItems) {
+    const neededRecent = Math.max(
+      0,
+      minRecentItems -
+        selected.filter((candidate) => itemIsRecent(candidate, minRecentYear)).length
+    );
+    for (const item of candidateWindow(
+      (candidate) => itemIsRecent(candidate, minRecentYear),
+      neededRecent
+    )) {
       if (selected.length >= max) break;
       if (selected.filter((candidate) => itemIsRecent(candidate, minRecentYear)).length >= minRecentItems) {
         break;
       }
-      if (!itemIsRecent(item, minRecentYear)) continue;
       tryTake(item);
     }
   }
 
   if (minOlderItems > 0) {
-    for (const item of scoredItems) {
+    const neededOlder = Math.max(
+      0,
+      minOlderItems -
+        selected.filter((candidate) => !itemIsRecent(candidate, minRecentYear)).length
+    );
+    for (const item of candidateWindow(
+      (candidate) => !itemIsRecent(candidate, minRecentYear),
+      neededOlder
+    )) {
       if (selected.length >= max) break;
       if (
         selected.filter((candidate) => !itemIsRecent(candidate, minRecentYear)).length >=
@@ -1206,7 +1242,6 @@ function selectDiverse(scoredItems, max, options = {}) {
       ) {
         break;
       }
-      if (itemIsRecent(item, minRecentYear)) continue;
       tryTake(item);
     }
   }

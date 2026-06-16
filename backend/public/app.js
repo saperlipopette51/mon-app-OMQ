@@ -11,10 +11,10 @@ const OPTIONS = {
     { value: "hbo-max", label: "HBO", icon: "🟣" },
   ],
   ages: [
-    { value: "all", label: "Tout public", icon: "👪" },
-    { value: "12", label: "Interdit aux moins de 12 ans", icon: "🚫" },
-    { value: "16", label: "Interdit aux moins de 16 ans", icon: "🛑" },
-    { value: "18", label: "Interdit aux moins de 18 ans", icon: "⛔" },
+    { value: "all", label: "Famille / tout public", icon: "👪" },
+    { value: "12", label: "Ado 12+", icon: "🚫" },
+    { value: "16", label: "Ado 16+", icon: "🛑" },
+    { value: "18", label: "Adulte 18+", icon: "⛔" },
   ],
   contentTypes: [
     { value: "film", label: "Film", icon: "🎬" },
@@ -2681,7 +2681,7 @@ function getStepMood(step) {
   if (!step) return "OMQ ajuste la selection.";
   if (step.type === "participants") return "Pop compte les spectateurs, Corn prepare le tri.";
   if (step.type === "platforms") return "On garde seulement les plateformes utiles pour la soiree.";
-  if (step.type === "age") return "Le filtre age evite les mauvaises surprises.";
+  if (step.type === "age") return "Le niveau de contenu evite les mauvaises surprises.";
   if (step.type === "summary") return "Dernier regard avant de lancer la selection.";
   if (step.type === "name") return "Chaque avis comptera dans le match final.";
   if (step.type === "contentType") return "Film ou serie, on cale d'abord le format.";
@@ -2728,8 +2728,8 @@ function renderPlatforms() {
 
 function renderAge() {
   return renderChoiceStep({
-    title: "Quel age pour la soiree ?",
-    hint: "On filtre pour eviter les mauvaises surprises.",
+    title: "Quel niveau de contenu ?",
+    hint: "Choisis jusqu'ou OMQ peut aller pour rester adapte a la soiree.",
     options: OPTIONS.ages,
     activeValue: state.global.ageRestriction,
     action: "age",
@@ -2814,7 +2814,7 @@ function renderSummary() {
     <p class="hint">OMQ va croiser les envies et sortir quelques pistes a regarder maintenant.</p>
     <div class="summary-list">
       <div class="summary-row"><span>Plateformes</span><strong>${escapeHtml(platforms)}</strong></div>
-      <div class="summary-row"><span>Age</span><strong>${escapeHtml(findLabel(OPTIONS.ages, state.global.ageRestriction))}</strong></div>
+      <div class="summary-row"><span>Niveau</span><strong>${escapeHtml(findLabel(OPTIONS.ages, state.global.ageRestriction))}</strong></div>
       ${users}
     </div>
   `;
